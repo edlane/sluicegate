@@ -25,3 +25,7 @@ streams/
 .vscode/
 .idea/
 .DS_Store
+
+# Agent Skills
+skills/
+
