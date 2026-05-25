@@ -1,6 +1,6 @@
 # Sluicegate: High-Performance Sequential Edge Stream Telemetry Engine
 
-Sluicegate is a cleanroom reimagination of high-speed, sequential edge stream storage and broadcasting systems. Designed for resource-constrained edge computing environments, it achieves ultra-high disk ingestion throughput, zero-copy physical sector head reclamation, and reactive real-time multi-subscriber event broadcasting.
+Sluicegate is a reimagination of high-speed, sequential edge stream storage and broadcasting systems. Designed for resource-constrained edge computing environments, it achieves ultra-high disk ingestion throughput, zero-copy physical sector head reclamation, and reactive real-time multi-subscriber event broadcasting.
 
 Sluicegate features a compiled **C FastCGI ingestion daemon** for hot-path networking, a context-managed **Python storage core** for logarithmic time-based pruning and POSIX deallocations, and a reactive **Server-Sent Events (SSE) server** with dynamic **Material-UI v6 (MUI)** admin dashboarding.
 
