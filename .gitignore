@@ -1,0 +1,27 @@
+# Node.js / React
+node_modules/
+dist/
+admin/node_modules/
+admin/dist/
+
+# Compiled Binaries and Objects
+src/ingest_fcgi
+*.o
+
+# Python / Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local Stream Data
+streams/
+*.json
+!admin/package.json
+!admin/tsconfig.json
+!admin/vite.config.ts
+
+# IDE / System
+.vscode/
+.idea/
+.DS_Store
