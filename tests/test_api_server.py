@@ -14,6 +14,7 @@ from server import SluicegateApiServer
 
 class TestSluicegateApiServer(unittest.TestCase):
     def setUp(self):
+        os.environ["SLUICEGATE_NO_AUTH"] = "1"
         self.test_dir = "/tmp/sluicegate_api_test"
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
@@ -30,8 +31,10 @@ class TestSluicegateApiServer(unittest.TestCase):
             f.write(self.dummy_index)
 
     def tearDown(self):
+        os.environ.pop("SLUICEGATE_NO_AUTH", None)
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
+
 
     async def _client_request(self, method, path, body=None, port=8299, headers=None):
         """Simulate client sending HTTP request directly to ApiServer port"""
@@ -194,6 +197,124 @@ class TestSluicegateApiServer(unittest.TestCase):
         """Execute full end-to-end integration flows asynchronously"""
         asyncio.run(self._run_e2e_test())
 
+    async def _run_auth_test(self):
+        # Explicitly turn on authentication for this test
+        os.environ.pop("SLUICEGATE_NO_AUTH", None)
+        port = 8499
+        server = SluicegateApiServer(self.streams_dir, self.static_dir, port=port)
+        await server.start()
+        
+        try:
+            # 1. Unauthenticated request to /api/topics should return 401 Unauthorized
+            status, headers, body = await self._client_request("GET", "/api/topics", port=port)
+            self.assertEqual(status, "HTTP/1.1 401 Unauthorized")
+            self.assertIn("www-authenticate", headers)
+            self.assertEqual(headers["www-authenticate"], 'Basic realm="Sluicegate Admin Portal"')
+            
+            # 2. Authenticated request with wrong password should return 401 Unauthorized
+            import base64
+            wrong_auth = base64.b64encode(b"admin:wrongpassword").decode('utf-8')
+            status, headers, body = await self._client_request(
+                "GET", "/api/topics", port=port, 
+                headers={"Authorization": f"Basic {wrong_auth}"}
+            )
+            self.assertEqual(status, "HTTP/1.1 401 Unauthorized")
+            
+            # 3. Authenticated request with correct credentials should return 200 OK
+            correct_auth = base64.b64encode(b"admin:sluicegate").decode('utf-8')
+            status, headers, body = await self._client_request(
+                "GET", "/api/topics", port=port, 
+                headers={"Authorization": f"Basic {correct_auth}"}
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            
+            # 4. Authenticated request to GET /api/system/apikey should return the key
+            status, headers, body = await self._client_request(
+                "GET", "/api/system/apikey", port=port,
+                headers={"Authorization": f"Basic {correct_auth}"}
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            res_data = json.loads(body.decode('utf-8'))
+            self.assertEqual(res_data["status"], "success")
+            original_key = res_data["api_key"]
+            self.assertTrue(len(original_key) >= 8)
+
+            # 5. Authenticated request to POST /api/system/apikey to update the key
+            new_custom_key = "sg_ingest_custom_telemetry_key_123"
+            status, headers, body = await self._client_request(
+                "POST", "/api/system/apikey", port=port,
+                body=json.dumps({"api_key": new_custom_key}),
+                headers={
+                    "Authorization": f"Basic {correct_auth}",
+                    "Content-Type": "application/json"
+                }
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            res_data = json.loads(body.decode('utf-8'))
+            self.assertEqual(res_data["api_key"], new_custom_key)
+            self.assertEqual(server.api_key, new_custom_key)
+
+            # 6. Verify that the C-daemon / .api_key file was written correctly
+            with open(server.api_key_path, "r") as f:
+                self.assertEqual(f.read().strip(), new_custom_key)
+
+            # 7. Unauthenticated request with correct Ingestion API Key header should bypass basic auth for data inject!
+            status, headers, body = await self._client_request(
+                "POST", "/api/inject?topic=sensor_auth", port=port,
+                body=json.dumps({"telemetry": "test"}),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Sluicegate-API-Key": new_custom_key
+                }
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+
+            # 8. Authenticated request to GET /api/system/readkey should return the read key
+            status, headers, body = await self._client_request(
+                "GET", "/api/system/readkey", port=port,
+                headers={"Authorization": f"Basic {correct_auth}"}
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            res_data = json.loads(body.decode('utf-8'))
+            self.assertEqual(res_data["status"], "success")
+            original_read_key = res_data["api_key"]
+            self.assertTrue(original_read_key.startswith("sg_read_"))
+
+            # 9. Authenticated request to POST /api/system/readkey to update the read key
+            new_custom_read_key = "sg_read_custom_client_key_123"
+            status, headers, body = await self._client_request(
+                "POST", "/api/system/readkey", port=port,
+                body=json.dumps({"api_key": new_custom_read_key}),
+                headers={
+                    "Authorization": f"Basic {correct_auth}",
+                    "Content-Type": "application/json"
+                }
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            res_data = json.loads(body.decode('utf-8'))
+            self.assertEqual(res_data["api_key"], new_custom_read_key)
+            self.assertEqual(server.read_key, new_custom_read_key)
+
+            # 10. Unauthenticated request with correct Read API Key header should bypass basic auth for data read!
+            status, headers, body = await self._client_request(
+                "GET", "/api/events?topic=sensor_auth&start_idx=0", port=port,
+                headers={
+                    "X-Sluicegate-Read-Key": new_custom_read_key
+                }
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            
+        finally:
+            await server.stop()
+            os.environ["SLUICEGATE_NO_AUTH"] = "1"
+
+
+
+    def test_basic_authentication(self):
+        """Verify the server enforces HTTP Basic Authentication correctly when active"""
+        asyncio.run(self._run_auth_test())
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -8,6 +8,9 @@ import ctypes
 import ctypes.util
 import asyncio
 import mimetypes
+import base64
+import secrets
+
 
 # Append src directory to import path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -97,6 +100,12 @@ class SluicegateApiServer:
         self.server = None
         self.watcher = None
 
+        # Authentication Configuration
+        self.auth_username = os.environ.get("SLUICEGATE_USER", "admin")
+        self.auth_password = os.environ.get("SLUICEGATE_PASSWORD", "sluicegate")
+        self.require_auth = os.environ.get("SLUICEGATE_NO_AUTH", "0") != "1"
+
+
         # Map: topic_name -> set(asyncio.Queue)
         self.topic_subscribers = {}
         
@@ -118,7 +127,61 @@ class SluicegateApiServer:
         if not os.path.exists(self.static_dir):
             os.makedirs(self.static_dir, exist_ok=True)
 
+        # Initialize Pre-Shared Ingestion API Key (Part B, Method 3)
+        self.api_key_path = os.path.join(self.streams_dir, ".api_key")
+        self.api_key = self._load_or_create_api_key()
+
+        # Initialize Ingestion Read API Key
+        self.read_key_path = os.path.join(self.streams_dir, ".read_key")
+        self.read_key = self._load_or_create_read_key()
+
+    def _load_or_create_api_key(self):
+        if os.path.exists(self.api_key_path):
+            try:
+                with open(self.api_key_path, "r") as f:
+                    key = f.read().strip()
+                    if key and key.startswith("sg_ingest_"):
+                        return key
+            except Exception as e:
+                print(f"Error reading .api_key file: {e}", file=sys.stderr)
+        
+        key = os.environ.get("SLUICEGATE_API_KEY")
+        if not key or not key.startswith("sg_ingest_"):
+            key = "sg_ingest_" + secrets.token_hex(16)
+        
+        try:
+            with open(self.api_key_path, "w") as f:
+                f.write(key)
+        except Exception as e:
+            print(f"Error writing .api_key file: {e}", file=sys.stderr)
+        
+        return key
+
+    def _load_or_create_read_key(self):
+        if os.path.exists(self.read_key_path):
+            try:
+                with open(self.read_key_path, "r") as f:
+                    key = f.read().strip()
+                    if key and key.startswith("sg_read_"):
+                        return key
+            except Exception as e:
+                print(f"Error reading .read_key file: {e}", file=sys.stderr)
+        
+        key = os.environ.get("SLUICEGATE_READ_KEY")
+        if not key or not key.startswith("sg_read_"):
+            key = "sg_read_" + secrets.token_hex(16)
+        
+        try:
+            with open(self.read_key_path, "w") as f:
+                f.write(key)
+        except Exception as e:
+            print(f"Error writing .read_key file: {e}", file=sys.stderr)
+        
+        return key
+
+
     def _get_stream_path(self, topic):
+
         # Prevent path traversal attacks
         safe_topic = os.path.basename(topic).replace(".json", "")
         return os.path.join(self.streams_dir, f"{safe_topic}.json")
@@ -274,6 +337,41 @@ class SluicegateApiServer:
                             k, v = p.split("=", 1)
                             query_params[k] = v
 
+                # Authenticate request
+                if self.require_auth:
+                    auth_header = headers.get("authorization")
+                    client_api_key = headers.get("x-sluicegate-api-key")
+                    client_read_key = headers.get("x-sluicegate-read-key")
+                    query_api_key = query_params.get("api_key")
+                    query_read_key = query_params.get("read_key")
+                    
+                    authenticated = False
+                    
+                    if auth_header and auth_header.startswith("Basic "):
+                        try:
+                            encoded = auth_header.split(" ", 1)[1]
+                            decoded = base64.b64decode(encoded).decode('utf-8')
+                            username, password = decoded.split(":", 1)
+                            if username == self.auth_username and password == self.auth_password:
+                                authenticated = True
+                        except Exception:
+                            pass
+                    
+                    if not authenticated:
+                        if path == "/api/inject":
+                            key_to_check = client_api_key or query_api_key
+                            if key_to_check and key_to_check == self.api_key:
+                                authenticated = True
+                        elif path in ("/stream", "/api/events"):
+                            key_to_check = client_read_key or query_read_key or client_api_key or query_api_key
+                            if key_to_check and key_to_check in (self.read_key, self.api_key):
+                                authenticated = True
+                            
+                    if not authenticated:
+                        self._send_unauthorized(writer)
+                        return
+
+
                 if path == "/api/topics":
                     await self._handle_get_topics(writer)
                 elif path == "/api/events":
@@ -286,7 +384,23 @@ class SluicegateApiServer:
                     content_len = int(headers.get("content-length", 0))
                     body = await reader.readexactly(content_len) if content_len > 0 else b''
                     await self._handle_post_config(query_params, body, writer)
+                elif path == "/api/system/apikey":
+                    if method == "GET":
+                        await self._handle_get_system_apikey(writer)
+                    elif method == "POST":
+                        content_len = int(headers.get("content-length", 0))
+                        body = await reader.readexactly(content_len) if content_len > 0 else b''
+                        await self._handle_post_system_apikey(body, writer)
+                elif path == "/api/system/readkey":
+                    if method == "GET":
+                        await self._handle_get_system_readkey(writer)
+                    elif method == "POST":
+                        content_len = int(headers.get("content-length", 0))
+                        body = await reader.readexactly(content_len) if content_len > 0 else b''
+                        await self._handle_post_system_readkey(body, writer)
                 elif path == "/stream":
+
+
                     await self._handle_sse_stream(query_params, writer, reader)
                 else:
                     # Fallback to serving static frontend asset files
@@ -303,6 +417,19 @@ class SluicegateApiServer:
         finally:
             self.connection_tasks.discard(current_task)
 
+    def _send_unauthorized(self, writer):
+        response = (
+            b"HTTP/1.1 401 Unauthorized\r\n"
+            b"WWW-Authenticate: Basic realm=\"Sluicegate Admin Portal\"\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: 29\r\n"
+            b"Access-Control-Allow-Origin: *\r\n"
+            b"Connection: close\r\n\r\n"
+            b"{\"error\":\"Unauthorized Access\"}"
+        )
+        writer.write(response)
+        writer.close()
+
     def _send_cors_response(self, writer):
         response = (
             b"HTTP/1.1 200 OK\r\n"
@@ -314,6 +441,7 @@ class SluicegateApiServer:
         )
         writer.write(response)
         writer.close()
+
 
     async def _handle_get_topics(self, writer):
         # Rescan to detect new topic files
@@ -469,6 +597,130 @@ class SluicegateApiServer:
         except Exception as e:
             res_body = json.dumps({"error": f"Configuration update failed: {e}"}).encode('utf-8')
             self._send_json_error(500, res_body, writer)
+
+    async def _handle_get_system_apikey(self, writer):
+        res_body = json.dumps({
+            "status": "success",
+            "api_key": self.api_key
+        }).encode('utf-8')
+        response = (
+            f"HTTP/1.1 200 OK\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(res_body)}\r\n"
+            f"Access-Control-Allow-Origin: *\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode('utf-8') + res_body
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+
+    async def _handle_post_system_apikey(self, body_bytes, writer):
+        try:
+            req_data = json.loads(body_bytes.decode('utf-8'))
+        except Exception:
+            body = b'{"error":"Invalid JSON payload"}'
+            self._send_json_error(400, body, writer)
+            return
+
+        new_key = req_data.get("api_key")
+        regenerate = req_data.get("regenerate", False)
+
+        if regenerate:
+            new_key = "sg_ingest_" + secrets.token_hex(16)
+        elif not new_key or len(new_key) < 8:
+            body = b'{"error":"API key must be at least 8 characters long"}'
+            self._send_json_error(400, body, writer)
+            return
+        else:
+            if not new_key.startswith("sg_ingest_"):
+                new_key = "sg_ingest_" + new_key
+
+        try:
+            with open(self.api_key_path, "w") as f:
+                f.write(new_key)
+            self.api_key = new_key
+
+            res_body = json.dumps({
+                "status": "success",
+                "api_key": self.api_key
+            }).encode('utf-8')
+
+            response = (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(res_body)}\r\n"
+                f"Access-Control-Allow-Origin: *\r\n"
+                f"Connection: close\r\n\r\n"
+            ).encode('utf-8') + res_body
+            writer.write(response)
+            await writer.drain()
+            writer.close()
+        except Exception as e:
+            res_body = json.dumps({"error": f"Failed to save API key: {e}"}).encode('utf-8')
+            self._send_json_error(500, res_body, writer)
+
+    async def _handle_get_system_readkey(self, writer):
+        res_body = json.dumps({
+            "status": "success",
+            "api_key": self.read_key
+        }).encode('utf-8')
+        response = (
+            f"HTTP/1.1 200 OK\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(res_body)}\r\n"
+            f"Access-Control-Allow-Origin: *\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode('utf-8') + res_body
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+
+    async def _handle_post_system_readkey(self, body_bytes, writer):
+        try:
+            req_data = json.loads(body_bytes.decode('utf-8'))
+        except Exception:
+            body = b'{"error":"Invalid JSON payload"}'
+            self._send_json_error(400, body, writer)
+            return
+
+        new_key = req_data.get("api_key")
+        regenerate = req_data.get("regenerate", False)
+
+        if regenerate:
+            new_key = "sg_read_" + secrets.token_hex(16)
+        elif not new_key or len(new_key) < 8:
+            body = b'{"error":"API key must be at least 8 characters long"}'
+            self._send_json_error(400, body, writer)
+            return
+        else:
+            if not new_key.startswith("sg_read_"):
+                new_key = "sg_read_" + new_key
+
+        try:
+            with open(self.read_key_path, "w") as f:
+                f.write(new_key)
+            self.read_key = new_key
+
+            res_body = json.dumps({
+                "status": "success",
+                "api_key": self.read_key
+            }).encode('utf-8')
+
+            response = (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(res_body)}\r\n"
+                f"Access-Control-Allow-Origin: *\r\n"
+                f"Connection: close\r\n\r\n"
+            ).encode('utf-8') + res_body
+            writer.write(response)
+            await writer.drain()
+            writer.close()
+        except Exception as e:
+            res_body = json.dumps({"error": f"Failed to save Read Key: {e}"}).encode('utf-8')
+            self._send_json_error(500, res_body, writer)
+
+
 
     def _send_json_error(self, code, body_bytes, writer):
         status_msg = "Bad Request" if code == 400 else "Not Found" if code == 404 else "Internal Server Error"

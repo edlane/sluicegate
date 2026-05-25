@@ -44,7 +44,11 @@ import {
   Search,
   Dns,
   Storage,
+  VpnKey,
+  ContentCopy,
 } from '@mui/icons-material';
+
+
 
 // 1. Create a Premium Dark Theme with Vibrant Violet Accent & Glassmorphic variables
 const theme = createTheme({
@@ -164,10 +168,47 @@ export default function App() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const consoleBottomRef = useRef<HTMLDivElement | null>(null);
 
+  // API Key Management state
+  const [apiKey, setApiKey] = useState<string>('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [editingApiKey, setEditingApiKey] = useState<string>('');
+  const [savingApiKey, setSavingApiKey] = useState(false);
+
+  const [readKey, setReadKey] = useState<string>('');
+  const [showReadKey, setShowReadKey] = useState(false);
+  const [editingReadKey, setEditingReadKey] = useState<string>('');
+  const [savingReadKey, setSavingReadKey] = useState(false);
+
+  // Fetch API keys on load
+  useEffect(() => {
+    fetchKeys();
+  }, []);
+
+  const fetchKeys = async () => {
+    try {
+      const res1 = await fetch('/api/system/apikey');
+      if (res1.ok) {
+        const data1 = await res1.json();
+        setApiKey(data1.api_key || '');
+        setEditingApiKey(data1.api_key || '');
+      }
+      const res2 = await fetch('/api/system/readkey');
+      if (res2.ok) {
+        const data2 = await res2.json();
+        setReadKey(data2.api_key || '');
+        setEditingReadKey(data2.api_key || '');
+      }
+    } catch (err) {
+      console.error('Error fetching API keys:', err);
+    }
+  };
+
+
   // Poller for refreshing topics metadata
   useEffect(() => {
     fetchTopics();
     const interval = setInterval(fetchTopics, 3000);
+
     return () => clearInterval(interval);
   }, []);
 
@@ -210,9 +251,82 @@ export default function App() {
         showNotify('Failed to create topic', 'error');
       }
     } catch (e) {
-      showNotify(`Error creating topic: {e}`, 'error');
+      showNotify(`Error creating topic: ${e}`, 'error');
     }
   };
+
+  const handleRegenerateApiKey = () => {
+    const randomHex = Array.from({length: 32}, () => Math.floor(Math.random()*16).toString(16)).join('');
+    setEditingApiKey("sg_ingest_" + randomHex);
+    showNotify('New API Key generated locally! Click "Save Key" to apply changes.', 'info');
+  };
+
+  const handleSaveApiKey = async () => {
+    if (!editingApiKey.trim() || editingApiKey.trim().length < 8) {
+      showNotify('API Key must be at least 8 characters long', 'error');
+      return;
+    }
+    setSavingApiKey(true);
+    try {
+      const res = await fetch('/api/system/apikey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: editingApiKey.trim() })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setApiKey(data.api_key);
+        setEditingApiKey(data.api_key);
+        showNotify('Ingestion API Key saved successfully!', 'success');
+      } else {
+        showNotify('Failed to save Ingestion API Key', 'error');
+      }
+    } catch (e) {
+      showNotify(`Failed to save Ingestion API Key: ${e}`, 'error');
+    } finally {
+      setSavingApiKey(false);
+    }
+  };
+
+  const handleRegenerateReadKey = () => {
+    const randomHex = Array.from({length: 32}, () => Math.floor(Math.random()*16).toString(16)).join('');
+    setEditingReadKey("sg_read_" + randomHex);
+    showNotify('New Read Key generated locally! Click "Save Key" to apply changes.', 'info');
+  };
+
+  const handleSaveReadKey = async () => {
+    if (!editingReadKey.trim() || editingReadKey.trim().length < 8) {
+      showNotify('Read API Key must be at least 8 characters long', 'error');
+      return;
+    }
+    setSavingReadKey(true);
+    try {
+      const res = await fetch('/api/system/readkey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: editingReadKey.trim() })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReadKey(data.api_key);
+        setEditingReadKey(data.api_key);
+        showNotify('Read API Key saved successfully!', 'success');
+      } else {
+        showNotify('Failed to save Read API Key', 'error');
+      }
+    } catch (e) {
+      showNotify(`Failed to save Read API Key: ${e}`, 'error');
+    } finally {
+      setSavingReadKey(false);
+    }
+  };
+
+  const copyToClipboard = (val: string, label: string) => {
+    navigator.clipboard.writeText(val);
+    showNotify(`${label} copied to clipboard!`, 'info');
+  };
+
+
 
   const handleUpdateConfig = async () => {
     if (!configTopicName) return;
@@ -437,7 +551,9 @@ export default function App() {
             <Tab label="Topics Manager" />
             <Tab label="Event Explorer" />
             <Tab label="Live Console" />
+            <Tab label="Ingestion Key" />
           </Tabs>
+
 
           {/* TAB 0: DASHBOARD */}
           {tabValue === 0 && (
@@ -841,7 +957,202 @@ export default function App() {
             </Box>
           )}
 
+          {/* TAB 4: API KEY SECURITY */}
+          {tabValue === 4 && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {/* Card 1: Ingestion Key Manager */}
+              <Card sx={{ maxWidth: 800, mx: 'auto', p: 1, width: '100%' }}>
+                <CardContent sx={{ p: 4 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 1.5, mb: 2, color: 'primary.light' }}>
+                    <VpnKey fontSize="large" /> Ingestion Key Manager
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 4, lineHeight: 1.6 }}>
+                    Configure and manage the Pre-Shared Ingestion API Key (prefixed with <code>sg_ingest_</code>). 
+                    All edge devices, IoT telemetry gatherers, or FastCGI clients MUST supply this key in the 
+                    <code>X-Sluicegate-API-Key</code> HTTP header or the <code>api_key</code> query parameter 
+                    to write telemetry data.
+                  </Typography>
+
+                  <Box sx={{ mb: 4 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, textTransform: 'uppercase', color: 'text.secondary', fontSize: '0.75rem', letterSpacing: '0.05em' }}>
+                      Current Ingestion API Key
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                      <TextField
+                        fullWidth
+                        type={showApiKey ? 'text' : 'password'}
+                        value={apiKey}
+                        slotProps={{
+                          input: {
+                            readOnly: true,
+                            sx: { fontFamily: 'monospace', letterSpacing: showApiKey ? 'normal' : '0.1em', fontWeight: 600 }
+                          }
+                        }}
+                      />
+                      <Button
+                        variant="outlined"
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        sx={{ minWidth: 100, height: 56 }}
+                      >
+                        {showApiKey ? 'Hide' : 'Show'}
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        color="secondary"
+                        onClick={() => copyToClipboard(apiKey, 'Ingestion API Key')}
+                        startIcon={<ContentCopy />}
+                        sx={{ minWidth: 100, height: 56 }}
+                      >
+                        Copy
+                      </Button>
+                    </Box>
+                  </Box>
+
+                  <Box sx={{ borderTop: '1px solid rgba(255,255,255,0.05)', pt: 4, mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, fontSize: '1.1rem' }}>
+                      Update Ingestion Key
+                    </Typography>
+                    <Grid container spacing={3}>
+                      <Grid size={{ xs: 12, sm: 8 }}>
+                        <TextField
+                          fullWidth
+                          label="New Ingestion Key"
+                          value={editingApiKey}
+                          onChange={(e) => setEditingApiKey(e.target.value)}
+                          placeholder="Enter key (prefixed with sg_ingest_)"
+                          helperText="Key will be automatically prefixed with 'sg_ingest_' if not supplied."
+                          slotProps={{ input: { sx: { fontFamily: 'monospace' } } }}
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: 4 }} sx={{ display: 'flex', gap: 1.5, height: 56 }}>
+                        <Button
+                          variant="contained"
+                          color="primary"
+                          fullWidth
+                          onClick={handleSaveApiKey}
+                          disabled={savingApiKey || editingApiKey.trim() === apiKey || editingApiKey.trim().length < 8}
+                        >
+                          {savingApiKey ? 'Saving...' : 'Save Key'}
+                        </Button>
+                      </Grid>
+                    </Grid>
+                  </Box>
+
+                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 2 }}>
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      onClick={handleRegenerateApiKey}
+                      sx={{
+                        borderStyle: 'dashed',
+                        '&:hover': { borderStyle: 'solid', bgcolor: 'rgba(244, 67, 54, 0.05)' }
+                      }}
+                    >
+                      Regenerate Locally
+                    </Button>
+                  </Box>
+                </CardContent>
+              </Card>
+
+              {/* Card 2: Read Access Key Manager */}
+              <Card sx={{ maxWidth: 800, mx: 'auto', p: 1, width: '100%' }}>
+                <CardContent sx={{ p: 4 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 1.5, mb: 2, color: 'secondary.main' }}>
+                    <VpnKey fontSize="large" /> Read Access Key Manager
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 4, lineHeight: 1.6 }}>
+                    Configure and manage the Pre-Shared Read Access Key (prefixed with <code>sg_read_</code>). 
+                    All data visualization dashboards, programmatic subscribers, or SSE clients MUST supply this key in the 
+                    <code>X-Sluicegate-Read-Key</code> HTTP header or the <code>read_key</code> query parameter 
+                    to pull historical events or subscribe to real-time streams.
+                  </Typography>
+
+                  <Box sx={{ mb: 4 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, textTransform: 'uppercase', color: 'text.secondary', fontSize: '0.75rem', letterSpacing: '0.05em' }}>
+                      Current Read Access Key
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                      <TextField
+                        fullWidth
+                        type={showReadKey ? 'text' : 'password'}
+                        value={readKey}
+                        slotProps={{
+                          input: {
+                            readOnly: true,
+                            sx: { fontFamily: 'monospace', letterSpacing: showReadKey ? 'normal' : '0.1em', fontWeight: 600 }
+                          }
+                        }}
+                      />
+                      <Button
+                        variant="outlined"
+                        onClick={() => setShowReadKey(!showReadKey)}
+                        sx={{ minWidth: 100, height: 56 }}
+                      >
+                        {showReadKey ? 'Hide' : 'Show'}
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        color="secondary"
+                        onClick={() => copyToClipboard(readKey, 'Read Access Key')}
+                        startIcon={<ContentCopy />}
+                        sx={{ minWidth: 100, height: 56 }}
+                      >
+                        Copy
+                      </Button>
+                    </Box>
+                  </Box>
+
+                  <Box sx={{ borderTop: '1px solid rgba(255,255,255,0.05)', pt: 4, mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, fontSize: '1.1rem' }}>
+                      Update Read Access Key
+                    </Typography>
+                    <Grid container spacing={3}>
+                      <Grid size={{ xs: 12, sm: 8 }}>
+                        <TextField
+                          fullWidth
+                          label="New Read Key"
+                          value={editingReadKey}
+                          onChange={(e) => setEditingReadKey(e.target.value)}
+                          placeholder="Enter key (prefixed with sg_read_)"
+                          helperText="Key will be automatically prefixed with 'sg_read_' if not supplied."
+                          slotProps={{ input: { sx: { fontFamily: 'monospace' } } }}
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: 4 }} sx={{ display: 'flex', gap: 1.5, height: 56 }}>
+                        <Button
+                          variant="contained"
+                          color="secondary"
+                          fullWidth
+                          onClick={handleSaveReadKey}
+                          disabled={savingReadKey || editingReadKey.trim() === readKey || editingReadKey.trim().length < 8}
+                        >
+                          {savingReadKey ? 'Saving...' : 'Save Key'}
+                        </Button>
+                      </Grid>
+                    </Grid>
+                  </Box>
+
+                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 2 }}>
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      onClick={handleRegenerateReadKey}
+                      sx={{
+                        borderStyle: 'dashed',
+                        '&:hover': { borderStyle: 'solid', bgcolor: 'rgba(244, 67, 54, 0.05)' }
+                      }}
+                    >
+                      Regenerate Locally
+                    </Button>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Box>
+          )}
+
         </Container>
+
+
 
         {/* Create Topic Dialog */}
         <Dialog open={createDialogOpen} onClose={() => setCreateDialogOpen(false)}>

@@ -78,16 +78,52 @@ python3 src/server.py
 Open your browser and navigate to **`http://localhost:8088`** to access the premium Sluicegate Admin Portal!
 
 ### Running with Docker
-Sluicegate supports a highly optimized multi-stage build. Run the entire full-stack system inside an isolated container instantly:
+Sluicegate supports a highly optimized multi-stage build that compiles the optimized C FastCGI daemon alongside the compiled React production bundle inside an isolated container instantly:
+
 ```bash
 # Build the container
 docker build -t sluicegate .
 
-# Start the container
-docker run -p 8088:8088 -p 2099:2099 -v $(pwd)/streams:/app/streams sluicegate
+# Start the container with data and key persistence
+docker run -d \
+  -p 8088:8088 \
+  -p 2099:2099 \
+  -v $(pwd)/streams:/app/streams \
+  --name sluicegate-app \
+  sluicegate
 ```
 
+> [!IMPORTANT]
+> **Data & Key Persistence**: Mounting the `/app/streams` directory via `-v $(pwd)/streams:/app/streams` is highly recommended. This ensures that both your telemetry stream log files and active security keys (`.api_key` and `.read_key`) are persistently saved on your host machine and persist across container updates/restarts.
+
+### Docker Configuration Environment Variables
+You can customize the container's security, routing, and ingestion settings by specifying environment variables during `docker run`:
+
+| Environment Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `SLUICEGATE_USER` | `admin` | HTTP Basic Auth username for Admin Portal login |
+| `SLUICEGATE_PASSWORD` | `sluicegate` | HTTP Basic Auth password for Admin Portal login |
+| `SLUICEGATE_API_KEY` | *(Auto-generated)* | Custom override for the Ingestion Key (e.g. `sg_ingest_mykey123`) |
+| `SLUICEGATE_READ_KEY` | *(Auto-generated)* | Custom override for the Read Access Key (e.g. `sg_read_mykey123`) |
+| `SLUICEGATE_NO_AUTH` | `0` | Set to `1` to bypass basic auth credentials validation (Development Only) |
+
+#### Example: Running with Custom Credentials and Custom API Keys
+```bash
+docker run -d \
+  -p 8088:8088 \
+  -p 2099:2099 \
+  -e SLUICEGATE_USER=telemetry_admin \
+  -e SLUICEGATE_PASSWORD=supersecurepassword99 \
+  -e SLUICEGATE_API_KEY=sg_ingest_custom_production_key_456 \
+  -e SLUICEGATE_READ_KEY=sg_read_custom_production_key_789 \
+  -v $(pwd)/streams:/app/streams \
+  --name sluicegate-app \
+  sluicegate
+```
+
+
 ---
+
 
 ## Verification & Benchmarks
 

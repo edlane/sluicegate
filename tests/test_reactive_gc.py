@@ -15,6 +15,7 @@ from storage import SequentialLogStream
 
 class TestReactiveGarbageCollection(unittest.TestCase):
     def setUp(self):
+        os.environ["SLUICEGATE_NO_AUTH"] = "1"
         self.test_dir = "/tmp/sluicegate_gc_test"
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
@@ -30,8 +31,10 @@ class TestReactiveGarbageCollection(unittest.TestCase):
             f.write("<html></html>")
 
     def tearDown(self):
+        os.environ.pop("SLUICEGATE_NO_AUTH", None)
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
+
 
     async def _post_config(self, topic, max_blocks, max_age_min, port=8399):
         """Helper to POST config changes to the REST endpoint"""

@@ -20,6 +20,184 @@
 static int socketId = LISTENSOCK_FILENO;
 static const char* ingest_path = DEFAULT_INGEST_PATH;
 
+#define LRU_CACHE_CAPACITY 8
+
+typedef struct {
+    char path[256];
+    int fd;
+    unsigned long last_access_seq;
+} FdCacheEntry;
+
+typedef struct {
+    char path[256];
+    char key[128];
+    time_t last_mtime;
+    unsigned long last_access_seq;
+} KeyCacheEntry;
+
+static FdCacheEntry fd_cache[LRU_CACHE_CAPACITY] = {
+    {"", -1, 0}, {"", -1, 0}, {"", -1, 0}, {"", -1, 0},
+    {"", -1, 0}, {"", -1, 0}, {"", -1, 0}, {"", -1, 0}
+};
+static KeyCacheEntry key_cache[LRU_CACHE_CAPACITY] = {
+    {"", "", 0, 0}, {"", "", 0, 0}, {"", "", 0, 0}, {"", "", 0, 0},
+    {"", "", 0, 0}, {"", "", 0, 0}, {"", "", 0, 0}, {"", "", 0, 0}
+};
+static unsigned long global_access_seq = 0;
+
+static int get_stream_fd_lru(const char* path) {
+    global_access_seq++;
+    
+    // 1. Search for hit
+    for (int i = 0; i < LRU_CACHE_CAPACITY; ++i) {
+        if (fd_cache[i].fd >= 0 && strcmp(fd_cache[i].path, path) == 0) {
+            fd_cache[i].last_access_seq = global_access_seq;
+            return fd_cache[i].fd;
+        }
+    }
+
+    // 2. Search for empty slot
+    int target_idx = -1;
+    for (int i = 0; i < LRU_CACHE_CAPACITY; ++i) {
+        if (fd_cache[i].fd < 0) {
+            target_idx = i;
+            break;
+        }
+    }
+
+    // 3. If full, perform LRU eviction
+    if (target_idx == -1) {
+        unsigned long min_seq = fd_cache[0].last_access_seq;
+        target_idx = 0;
+        for (int i = 1; i < LRU_CACHE_CAPACITY; ++i) {
+            if (fd_cache[i].last_access_seq < min_seq) {
+                min_seq = fd_cache[i].last_access_seq;
+                target_idx = i;
+            }
+        }
+        // Close the evicted file descriptor
+        if (fd_cache[target_idx].fd >= 0) {
+            close(fd_cache[target_idx].fd);
+            fd_cache[target_idx].fd = -1;
+        }
+    }
+
+    // 4. Open the new file and insert into cache
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0664);
+    if (fd >= 0) {
+        snprintf(fd_cache[target_idx].path, sizeof(fd_cache[target_idx].path), "%s", path);
+        fd_cache[target_idx].fd = fd;
+        fd_cache[target_idx].last_access_seq = global_access_seq;
+    }
+    return fd;
+}
+
+static void invalidate_stream_fd(int fd) {
+    for (int i = 0; i < LRU_CACHE_CAPACITY; ++i) {
+        if (fd_cache[i].fd == fd) {
+            close(fd_cache[i].fd);
+            fd_cache[i].fd = -1;
+            fd_cache[i].path[0] = '\0';
+            break;
+        }
+    }
+}
+
+static int load_api_key_lru(const char* key_path, char* key_buf, size_t max_len) {
+    global_access_seq++;
+    struct stat st;
+    int has_file = (stat(key_path, &st) == 0);
+    time_t current_mtime = has_file ? st.st_mtime : 0;
+
+    // 1. Search for hit
+    for (int i = 0; i < LRU_CACHE_CAPACITY; ++i) {
+        if (key_cache[i].path[0] != '\0' && strcmp(key_cache[i].path, key_path) == 0) {
+            key_cache[i].last_access_seq = global_access_seq;
+            // If mtime matches, return cached key
+            if (has_file && key_cache[i].last_mtime == current_mtime) {
+                snprintf(key_buf, max_len, "%s", key_cache[i].key);
+                return 1;
+            }
+            // If mtime changed or stat failed, fall through to reload it
+            break;
+        }
+    }
+
+    // If file exists, read it
+    char fresh_key[128] = {0};
+    int read_success = 0;
+    if (has_file) {
+        int fd = open(key_path, O_RDONLY);
+        if (fd >= 0) {
+            ssize_t bytes_read = read(fd, fresh_key, sizeof(fresh_key) - 1);
+            close(fd);
+            if (bytes_read > 0) {
+                fresh_key[bytes_read] = '\0';
+                // Strip trailing newlines or whitespace
+                char* end = fresh_key + strlen(fresh_key) - 1;
+                while (end >= fresh_key && (*end == '\r' || *end == '\n' || *end == ' ' || *end == '\t')) {
+                    *end = '\0';
+                    end--;
+                }
+                read_success = 1;
+            }
+        }
+    }
+
+    // Fallback to environment variable if read failed
+    if (!read_success) {
+        char* env_key = getenv("SLUICEGATE_API_KEY");
+        if (env_key && strlen(env_key) > 0) {
+            snprintf(fresh_key, sizeof(fresh_key), "%s", env_key);
+            read_success = 1;
+            current_mtime = 0; // No backing file
+        }
+    }
+
+    if (read_success) {
+        // Find existing slot or empty slot or LRU evict
+        int target_idx = -1;
+        // Check if already in cache
+        for (int i = 0; i < LRU_CACHE_CAPACITY; ++i) {
+            if (key_cache[i].path[0] != '\0' && strcmp(key_cache[i].path, key_path) == 0) {
+                target_idx = i;
+                break;
+            }
+        }
+        // Search for empty slot
+        if (target_idx == -1) {
+            for (int i = 0; i < LRU_CACHE_CAPACITY; ++i) {
+                if (key_cache[i].path[0] == '\0') {
+                    target_idx = i;
+                    break;
+                }
+            }
+        }
+        // LRU evict if still not found
+        if (target_idx == -1) {
+            unsigned long min_seq = key_cache[0].last_access_seq;
+            target_idx = 0;
+            for (int i = 1; i < LRU_CACHE_CAPACITY; ++i) {
+                if (key_cache[i].last_access_seq < min_seq) {
+                    min_seq = key_cache[i].last_access_seq;
+                    target_idx = i;
+                }
+            }
+        }
+
+        // Store in cache
+        snprintf(key_cache[target_idx].path, sizeof(key_cache[target_idx].path), "%s", key_path);
+        snprintf(key_cache[target_idx].key, sizeof(key_cache[target_idx].key), "%s", fresh_key);
+        key_cache[target_idx].last_mtime = current_mtime;
+        key_cache[target_idx].last_access_seq = global_access_seq;
+
+        snprintf(key_buf, max_len, "%s", fresh_key);
+        return 1;
+    }
+
+    return 0;
+}
+
 /* Succinct, decoupled JSON stream keys:
  * {"nxt":<size>,"ts":<float>,"src":"<ip:port>","data":<payload>,"prv":<size>}
  */
@@ -54,6 +232,21 @@ static inline int setToIov(int fieldNum, char* buf, int len) {
     return 0;
 }
 
+static int load_api_key(char* key_buf, size_t max_len) {
+    char key_path[256];
+    strncpy(key_path, ingest_path, sizeof(key_path) - 1);
+    key_path[sizeof(key_path) - 1] = '\0';
+    char* last_slash = strrchr(key_path, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+        strncat(key_path, "/.api_key", sizeof(key_path) - strlen(key_path) - 1);
+    } else {
+        strncpy(key_path, ".api_key", sizeof(key_path) - 1);
+    }
+
+    return load_api_key_lru(key_path, key_buf, max_len);
+}
+
 int ingestLoop() {
     int rc = 0;
     int nSize = 0;
@@ -77,7 +270,18 @@ int ingestLoop() {
         int nPostLen = sContentLen ? atoi(sContentLen) : 0;
 
         if (sMethod && strcmp(sMethod, "POST") == 0 && nPostLen > 0 && nPostLen <= POST_DATA_SIZE_LIMIT) {
+            char expected_key[128] = {0};
+            if (load_api_key(expected_key, sizeof(expected_key))) {
+                char* client_key = FCGX_GetParam("HTTP_X_SLUICEGATE_API_KEY", request.envp);
+                if (!client_key || strcmp(client_key, expected_key) != 0) {
+                    FCGX_PutS("Status: 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"error\":\"Unauthorized: Invalid API Key\"}", request.out);
+                    FCGX_Finish_r(&request);
+                    continue;
+                }
+            }
+
             memset(iov, 0, sizeof(iov));
+
             memset(wrap_buf, 0, sizeof(wrap_buf));
             char* bufP = &wrap_buf[0];
 
@@ -147,7 +351,7 @@ int ingestLoop() {
                 }
             }
 
-            int ingestFd = open(ingest_path, O_WRONLY | O_CREAT | O_APPEND, 0664);
+            int ingestFd = get_stream_fd_lru(ingest_path);
             if (ingestFd < 0) {
                 syslog(LOG_ERR, "FCGI: Could not open ingest file: %s", ingest_path);
                 FCGX_PutS("Status: 500 Internal Server Error\r\n\r\n", request.out);
@@ -156,13 +360,13 @@ int ingestLoop() {
                 if (written < 0) {
                     syslog(LOG_ERR, "FCGI: Failed to write event to %s", ingest_path);
                     FCGX_PutS("Status: 500 Internal Server Error\r\n\r\n", request.out);
+                    invalidate_stream_fd(ingestFd);
                 } else if (written != final_size) {
                     syslog(LOG_WARNING, "FCGI: Size mismatch. Calculated %d, wrote %d", final_size, written);
                     FCGX_PutS("Status: 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"warning\",\"detail\":\"size_mismatch\"}", request.out);
                 } else {
                     FCGX_PutS("Status: 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"success\"}", request.out);
                 }
-                close(ingestFd);
             }
 
             free(dataBuf);
