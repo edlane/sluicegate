@@ -324,7 +324,7 @@ class SluicegateApiServer:
 
                 # Handle CORS preflight
                 if method == "OPTIONS":
-                    self._send_cors_response(writer)
+                    await self._send_cors_response(writer)
                     return
 
                 # Route requests
@@ -337,8 +337,10 @@ class SluicegateApiServer:
                             k, v = p.split("=", 1)
                             query_params[k] = v
 
+                is_api = path.startswith("/api/") or path == "/stream"
+                print(f"[Request] {method} {path} (is_api={is_api})", file=sys.stderr)
                 # Authenticate request
-                if self.require_auth:
+                if self.require_auth and is_api:
                     auth_header = headers.get("authorization")
                     client_api_key = headers.get("x-sluicegate-api-key")
                     client_read_key = headers.get("x-sluicegate-read-key")
@@ -346,6 +348,7 @@ class SluicegateApiServer:
                     query_read_key = query_params.get("read_key")
                     
                     authenticated = False
+                    print(f"[Auth Debug] path={path} auth_header={repr(auth_header)} api_key={repr(client_api_key or query_api_key)} read_key={repr(client_read_key or query_read_key)}", file=sys.stderr)
                     
                     if auth_header and auth_header.startswith("Basic "):
                         try:
@@ -354,8 +357,10 @@ class SluicegateApiServer:
                             username, password = decoded.split(":", 1)
                             if username == self.auth_username and password == self.auth_password:
                                 authenticated = True
-                        except Exception:
-                            pass
+                            else:
+                                print(f"[Auth Failure] Credentials mismatch. Received '{username}' / '{password}'. Expected '{self.auth_username}' / '{self.auth_password}'", file=sys.stderr)
+                        except Exception as e:
+                            print(f"[Auth Error] Exception parsing Basic Auth header: {e}", file=sys.stderr)
                     
                     if not authenticated:
                         if path == "/api/inject":
@@ -368,7 +373,9 @@ class SluicegateApiServer:
                                 authenticated = True
                             
                     if not authenticated:
-                        self._send_unauthorized(writer)
+                        user_agent = headers.get("user-agent", "").lower()
+                        is_browser = any(b in user_agent for b in ("mozilla", "chrome", "safari", "webkit", "edge", "opera"))
+                        await self._send_unauthorized(writer, suppress_prompt=is_browser)
                         return
 
 
@@ -417,10 +424,11 @@ class SluicegateApiServer:
         finally:
             self.connection_tasks.discard(current_task)
 
-    def _send_unauthorized(self, writer):
+    async def _send_unauthorized(self, writer, suppress_prompt=False):
+        scheme = b"x-Basic" if suppress_prompt else b"Basic"
         response = (
             b"HTTP/1.1 401 Unauthorized\r\n"
-            b"WWW-Authenticate: Basic realm=\"Sluicegate Admin Portal\"\r\n"
+            b"WWW-Authenticate: " + scheme + b" realm=\"Sluicegate Admin Portal\"\r\n"
             b"Content-Type: application/json\r\n"
             b"Content-Length: 29\r\n"
             b"Access-Control-Allow-Origin: *\r\n"
@@ -428,9 +436,10 @@ class SluicegateApiServer:
             b"{\"error\":\"Unauthorized Access\"}"
         )
         writer.write(response)
+        await writer.drain()
         writer.close()
 
-    def _send_cors_response(self, writer):
+    async def _send_cors_response(self, writer):
         response = (
             b"HTTP/1.1 200 OK\r\n"
             b"Access-Control-Allow-Origin: *\r\n"
@@ -440,6 +449,7 @@ class SluicegateApiServer:
             b"Connection: close\r\n\r\n"
         )
         writer.write(response)
+        await writer.drain()
         writer.close()
 
 
@@ -850,10 +860,15 @@ class SluicegateApiServer:
             with open(full_path, 'rb') as f:
                 content = f.read()
             
+            cache_control = ""
+            if full_path.endswith("index.html"):
+                cache_control = "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
+
             response = (
                 f"HTTP/1.1 200 OK\r\n"
                 f"Content-Type: {mtype}\r\n"
                 f"Content-Length: {len(content)}\r\n"
+                f"{cache_control}"
                 f"Access-Control-Allow-Origin: *\r\n"
                 f"Connection: close\r\n\r\n"
             ).encode('utf-8') + content
@@ -894,10 +909,14 @@ class SluicegateApiServer:
 
 if __name__ == "__main__":
     # Launch main API server
-    streams = "/home/lane/develop/sluicegate/streams"
-    static = "/home/lane/develop/sluicegate/admin/dist"
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
-    server = SluicegateApiServer(streams, static, port=8088)
+    streams = os.environ.get("SLUICEGATE_STREAMS_DIR", os.path.join(base_dir, "streams"))
+    static = os.environ.get("SLUICEGATE_STATIC_DIR", os.path.join(base_dir, "admin", "dist"))
+    host = os.environ.get("SLUICEGATE_HOST", "0.0.0.0")
+    port = int(os.environ.get("SLUICEGATE_PORT", 8088))
+    
+    server = SluicegateApiServer(streams, static, host=host, port=port)
     
     loop = asyncio.get_event_loop()
     loop.run_until_complete(server.start())

@@ -179,20 +179,78 @@ export default function App() {
   const [editingReadKey, setEditingReadKey] = useState<string>('');
   const [savingReadKey, setSavingReadKey] = useState(false);
 
-  // Fetch API keys on load
+  // Custom Authentication Layer & SSO states
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loginUsername, setLoginUsername] = useState('admin');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  const getAuthHeader = () => {
+    const token = sessionStorage.getItem('sluicegate_auth');
+    return token ? { 'Authorization': `Basic ${token}` } : {};
+  };
+
+  const authFetch = async (input: RequestInfo, init?: RequestInit) => {
+    const headers: Record<string, string> = {};
+    const authHeader = getAuthHeader();
+    if (authHeader.Authorization) {
+      headers['Authorization'] = authHeader.Authorization;
+    }
+    if (init?.headers) {
+      Object.assign(headers, init.headers);
+    }
+    const res = await fetch(input, {
+      ...init,
+      headers,
+    });
+    if (res.status === 401) {
+      setIsAuthenticated(false);
+      sessionStorage.removeItem('sluicegate_auth');
+    }
+    return res;
+  };
+
+  // URL-based Single Sign-On check and Session caching on mount
   useEffect(() => {
-    fetchKeys();
+    const params = new URLSearchParams(window.location.search);
+    const ssoUser = params.get('sso_user');
+    const ssoPass = params.get('sso_pass');
+
+    if (ssoUser && ssoPass) {
+      const token = btoa(`${ssoUser}:${ssoPass}`);
+      sessionStorage.setItem('sluicegate_auth', token);
+      setIsAuthenticated(true);
+
+      // Scrub SSO parameters immediately so they do not persist in address history
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    } else {
+      const token = sessionStorage.getItem('sluicegate_auth');
+      if (token) {
+        setIsAuthenticated(true);
+      }
+    }
   }, []);
+
+  // Fetch API keys and boot metadata poller once authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchKeys();
+      fetchTopics();
+      const interval = setInterval(fetchTopics, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [isAuthenticated]);
 
   const fetchKeys = async () => {
     try {
-      const res1 = await fetch('/api/system/apikey');
+      const res1 = await authFetch('/api/system/apikey');
       if (res1.ok) {
         const data1 = await res1.json();
         setApiKey(data1.api_key || '');
         setEditingApiKey(data1.api_key || '');
       }
-      const res2 = await fetch('/api/system/readkey');
+      const res2 = await authFetch('/api/system/readkey');
       if (res2.ok) {
         const data2 = await res2.json();
         setReadKey(data2.api_key || '');
@@ -203,18 +261,9 @@ export default function App() {
     }
   };
 
-
-  // Poller for refreshing topics metadata
-  useEffect(() => {
-    fetchTopics();
-    const interval = setInterval(fetchTopics, 3000);
-
-    return () => clearInterval(interval);
-  }, []);
-
   const fetchTopics = async () => {
     try {
-      const res = await fetch('/api/topics');
+      const res = await authFetch('/api/topics');
       if (res.ok) {
         const data = await res.json();
         setTopics(data.topics || []);
@@ -231,12 +280,30 @@ export default function App() {
     }
   };
 
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    const token = btoa(`${loginUsername}:${loginPassword}`);
+    try {
+      const res = await fetch('/api/topics', {
+        headers: { 'Authorization': `Basic ${token}` }
+      });
+      if (res.ok) {
+        sessionStorage.setItem('sluicegate_auth', token);
+        setIsAuthenticated(true);
+      } else {
+        setLoginError('Invalid administrator credentials.');
+      }
+    } catch {
+      setLoginError('Could not connect to Sluicegate server.');
+    }
+  };
+
   const handleCreateTopic = async () => {
     if (!newTopicName.trim()) return;
     try {
-      // Injects a bootstrap payload to create the topic instantly
       const cleanName = newTopicName.trim().replace(/[^a-zA-Z0-9_-]/g, '');
-      const res = await fetch(`/api/inject?topic=${cleanName}`, {
+      const res = await authFetch(`/api/inject?topic=${cleanName}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sys: 'topic_bootstrap', ts: Date.now() }),
@@ -268,7 +335,7 @@ export default function App() {
     }
     setSavingApiKey(true);
     try {
-      const res = await fetch('/api/system/apikey', {
+      const res = await authFetch('/api/system/apikey', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ api_key: editingApiKey.trim() })
@@ -301,7 +368,7 @@ export default function App() {
     }
     setSavingReadKey(true);
     try {
-      const res = await fetch('/api/system/readkey', {
+      const res = await authFetch('/api/system/readkey', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ api_key: editingReadKey.trim() })
@@ -326,13 +393,11 @@ export default function App() {
     showNotify(`${label} copied to clipboard!`, 'info');
   };
 
-
-
   const handleUpdateConfig = async () => {
     if (!configTopicName) return;
     try {
       setUpdatingConfig(true);
-      const res = await fetch(`/api/config?topic=${configTopicName}`, {
+      const res = await authFetch(`/api/config?topic=${configTopicName}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -359,7 +424,7 @@ export default function App() {
     setExplorerLoading(true);
     try {
       const idx = parseInt(explorerStartIdx) || 0;
-      const res = await fetch(`/api/events?topic=${selectedTopic}&start_idx=${idx}&limit=${explorerLimit}`);
+      const res = await authFetch(`/api/events?topic=${selectedTopic}&start_idx=${idx}&limit=${explorerLimit}`);
       if (res.ok) {
         const data = await res.json();
         setHistoricalEvents(data.events || []);
@@ -379,7 +444,7 @@ export default function App() {
     try {
       const parsed = JSON.parse(injectPayload);
       setInjecting(true);
-      const res = await fetch(`/api/inject?topic=${selectedTopic}`, {
+      const res = await authFetch(`/api/inject?topic=${selectedTopic}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(parsed),
@@ -422,8 +487,9 @@ export default function App() {
     setStreamEvents([]);
     setStreamThroughput(0);
 
+    const readKeyParam = readKey ? `&read_key=${encodeURIComponent(readKey)}` : '';
     const startIdxParam = streamStartIdx.trim() ? `&start_idx=${parseInt(streamStartIdx) || 0}` : '';
-    const url = `/stream?topic=${selectedTopic}${startIdxParam}`;
+    const url = `/stream?topic=${selectedTopic}${startIdxParam}${readKeyParam}`;
     
     console.log(`[SSE] Connecting to: ${url}`);
     const source = new EventSource(url);
@@ -482,6 +548,107 @@ export default function App() {
     const totalBlocks = topics.reduce((acc, t) => acc + t.allocated_blocks, 0);
     return { totalSize, totalBlocks };
   }, [topics]);
+
+  if (!isAuthenticated) {
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Box sx={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'radial-gradient(circle at center, #1e1035 0%, #0a0a0c 100%)',
+          p: 2
+        }}>
+          <Card sx={{
+            maxWidth: 400,
+            width: '100%',
+            p: 4,
+            background: 'rgba(18, 18, 22, 0.65)',
+            backdropFilter: 'blur(20px)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            boxShadow: '0 20px 40px rgba(0,0,0,0.6), 0 0 40px rgba(124, 77, 255, 0.15)',
+            transition: 'none !important',
+            '&:hover': {
+              transform: 'none !important',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.6), 0 0 40px rgba(124, 77, 255, 0.25) !important'
+            }
+          }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 4 }}>
+              <Box sx={{
+                p: 2,
+                borderRadius: 4,
+                background: 'linear-gradient(135deg, #7c4dff, #00e5ff)',
+                display: 'flex',
+                boxShadow: '0 8px 24px rgba(124, 77, 255, 0.3)',
+                mb: 2
+              }}>
+                <Storage sx={{ color: '#fff', fontSize: 32 }} />
+              </Box>
+              <Typography variant="h4" sx={{
+                fontWeight: 800,
+                letterSpacing: '-0.04em',
+                background: 'linear-gradient(45deg, #f5f5f7, #a0a0b0)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                mb: 1
+              }}>
+                SLUICEGATE
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: '0.75rem' }}>
+                Edge Telemetry Admin Login
+              </Typography>
+            </Box>
+
+            <form onSubmit={handleLogin}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <TextField
+                  fullWidth
+                  label="Username"
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  variant="outlined"
+                  required
+                />
+                <TextField
+                  fullWidth
+                  label="Password"
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  variant="outlined"
+                  required
+                  autoFocus
+                />
+                {loginError && (
+                  <Typography variant="body2" color="error" sx={{ fontWeight: 600, textAlign: 'center' }}>
+                    {loginError}
+                  </Typography>
+                )}
+                <Button
+                  type="submit"
+                  variant="contained"
+                  color="primary"
+                  size="large"
+                  sx={{
+                    py: 1.5,
+                    fontSize: '1rem',
+                    background: 'linear-gradient(135deg, #7c4dff, #00e5ff)',
+                    '&:hover': {
+                      background: 'linear-gradient(135deg, #6c3dec, #00d5ee)',
+                    }
+                  }}
+                >
+                  Authenticate
+                </Button>
+              </Box>
+            </form>
+          </Card>
+        </Box>
+      </ThemeProvider>
+    );
+  }
 
   return (
     <ThemeProvider theme={theme}>
