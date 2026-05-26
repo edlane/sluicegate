@@ -46,6 +46,7 @@ import {
   Storage,
   VpnKey,
   ContentCopy,
+  Visibility,
 } from '@mui/icons-material';
 
 
@@ -129,6 +130,31 @@ interface LogEvent {
   data: any;
 }
 
+function syntaxHighlightJson(json: any) {
+  if (typeof json !== 'string') {
+    json = JSON.stringify(json, null, 2);
+  }
+  // Escape HTML characters
+  json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  
+  // Highlight key, string, number, boolean, null
+  return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, (match: string) => {
+    let cls = 'color: #00e5ff;'; // Number (Neon Cyan)
+    if (/^"/.test(match)) {
+      if (/:$/.test(match)) {
+        cls = 'color: #b47cff; font-weight: 600;'; // Key (Light Purple)
+      } else {
+        cls = 'color: #e2e2e9;'; // String (Light grey/white)
+      }
+    } else if (/true|false/.test(match)) {
+      cls = 'color: #4caf50; font-weight: bold;'; // Boolean (Green)
+    } else if (/null/.test(match)) {
+      cls = 'color: #ff9800; font-weight: bold;'; // Null (Orange)
+    }
+    return `<span style="${cls}">${match}</span>`;
+  });
+}
+
 export default function App() {
   const [tabValue, setTabValue] = useState(0);
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -154,6 +180,7 @@ export default function App() {
   const [explorerStartIdx, setExplorerStartIdx] = useState<string>('-10'); // negative default relative
   const [explorerLimit, setExplorerLimit] = useState<number>(50);
   const [explorerLoading, setExplorerLoading] = useState(false);
+  const [jsonViewerEvent, setJsonViewerEvent] = useState<LogEvent | null>(null);
 
   // Ingestion Composer state
   const [injectPayload, setInjectPayload] = useState<string>('{\n  "event": "device_telemetry",\n  "status": "normal",\n  "metric": 42.5\n}');
@@ -186,6 +213,10 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
 
   const getAuthHeader = () => {
+    const ssoToken = sessionStorage.getItem('sluicegate_sso_token');
+    if (ssoToken) {
+      return { 'Authorization': `Bearer ${ssoToken}` };
+    }
     const token = sessionStorage.getItem('sluicegate_auth');
     return token ? { 'Authorization': `Basic ${token}` } : {};
   };
@@ -206,6 +237,7 @@ export default function App() {
     if (res.status === 401) {
       setIsAuthenticated(false);
       sessionStorage.removeItem('sluicegate_auth');
+      sessionStorage.removeItem('sluicegate_sso_token');
     }
     return res;
   };
@@ -213,10 +245,18 @@ export default function App() {
   // URL-based Single Sign-On check and Session caching on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const ssoToken = params.get('sso_token');
     const ssoUser = params.get('sso_user');
     const ssoPass = params.get('sso_pass');
 
-    if (ssoUser && ssoPass) {
+    if (ssoToken) {
+      sessionStorage.setItem('sluicegate_sso_token', ssoToken);
+      setIsAuthenticated(true);
+
+      // Scrub SSO parameters immediately so they do not persist in address history
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    } else if (ssoUser && ssoPass) {
       const token = btoa(`${ssoUser}:${ssoPass}`);
       sessionStorage.setItem('sluicegate_auth', token);
       setIsAuthenticated(true);
@@ -225,7 +265,7 @@ export default function App() {
       const cleanUrl = window.location.pathname;
       window.history.replaceState({}, document.title, cleanUrl);
     } else {
-      const token = sessionStorage.getItem('sluicegate_auth');
+      const token = sessionStorage.getItem('sluicegate_auth') || sessionStorage.getItem('sluicegate_sso_token');
       if (token) {
         setIsAuthenticated(true);
       }
@@ -269,9 +309,12 @@ export default function App() {
         setTopics(data.topics || []);
         setServerOnline(true);
         // Default select first topic if none is selected
-        if (data.topics && data.topics.length > 0 && !selectedTopic) {
-          setSelectedTopic(data.topics[0].name);
-        }
+        setSelectedTopic(prev => {
+          if (!prev && data.topics && data.topics.length > 0) {
+            return data.topics[0].name;
+          }
+          return prev;
+        });
       } else {
         setServerOnline(false);
       }
@@ -670,26 +713,6 @@ export default function App() {
               </Box>
 
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Typography variant="body2" color="text.secondary">Topic Selection:</Typography>
-                  <TextField
-                    select
-                    size="small"
-                    value={selectedTopic}
-                    onChange={(e) => setSelectedTopic(e.target.value)}
-                    slotProps={{ select: { native: true } }}
-                    sx={{
-                      '& .MuiInputBase-input': { py: 0.6, fontSize: '0.875rem', fontWeight: 600 },
-                      bgcolor: 'rgba(255,255,255,0.03)',
-                      borderRadius: 2,
-                    }}
-                  >
-                    {topics.map((t) => (
-                      <option key={t.name} value={t.name} style={{ backgroundColor: '#121216' }}>{t.name}</option>
-                    ))}
-                  </TextField>
-                </Box>
-
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8 }}>
                   <FiberManualRecord sx={{ color: serverOnline ? '#4caf50' : '#f44336', fontSize: 14 }} />
                   <Typography variant="body2" sx={{ fontWeight: 700, color: serverOnline ? '#4caf50' : '#f44336' }}>
@@ -1006,8 +1029,44 @@ export default function App() {
                           <TableCell>
                             <Chip label={evt.src} size="small" color="primary" variant="outlined" sx={{ height: 20 }} />
                           </TableCell>
-                          <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.825rem' }}>
-                            {JSON.stringify(evt.data)}
+                          <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.825rem', maxWidth: 450 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  fontFamily: 'monospace',
+                                  fontSize: '0.825rem',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  color: 'text.secondary',
+                                  flexGrow: 1,
+                                }}
+                              >
+                                {JSON.stringify(evt.data)}
+                              </Typography>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => setJsonViewerEvent(evt)}
+                                startIcon={<Visibility sx={{ fontSize: 14 }} />}
+                                sx={{
+                                  py: 0.25,
+                                  px: 1.5,
+                                  fontSize: '0.75rem',
+                                  minWidth: 'auto',
+                                  borderColor: 'rgba(255, 255, 255, 0.15)',
+                                  color: 'text.primary',
+                                  flexShrink: 0,
+                                  '&:hover': {
+                                    borderColor: 'primary.main',
+                                    bgcolor: 'rgba(124, 77, 255, 0.08)',
+                                  }
+                                }}
+                              >
+                                Inspect
+                              </Button>
+                            </Box>
                           </TableCell>
                         </TableRow>
                       ))
@@ -1378,6 +1437,118 @@ export default function App() {
               {updatingConfig ? 'Saving...' : 'Apply Config'}
             </Button>
           </DialogActions>
+        </Dialog>
+
+        {/* JSON Viewer Dialog */}
+        <Dialog
+          open={!!jsonViewerEvent}
+          onClose={() => setJsonViewerEvent(null)}
+          maxWidth="md"
+          fullWidth
+          slotProps={{
+            paper: {
+              sx: {
+                background: 'rgba(18, 18, 22, 0.95)',
+                backdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                boxShadow: '0 24px 48px rgba(0,0,0,0.8), 0 0 32px rgba(124, 77, 255, 0.15)',
+                borderRadius: 4,
+              }
+            }
+          }}
+        >
+          <DialogTitle sx={{ fontWeight: 800, display: 'flex', justifyContent: 'space-between', alignItems: 'center', pb: 1, borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <Typography variant="h6" component="span" sx={{ fontWeight: 800 }}>
+                Event Payload Inspector
+              </Typography>
+              {jsonViewerEvent && (
+                <Chip
+                  label={`Offset: ${jsonViewerEvent.offset}`}
+                  size="small"
+                  color="secondary"
+                  variant="outlined"
+                  sx={{ fontWeight: 700 }}
+                />
+              )}
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              {jsonViewerEvent && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="secondary"
+                  startIcon={<ContentCopy />}
+                  onClick={() => copyToClipboard(JSON.stringify(jsonViewerEvent.data, null, 2), `Offset ${jsonViewerEvent.offset} payload`)}
+                  sx={{ py: 0.5, fontSize: '0.8rem' }}
+                >
+                  Copy JSON
+                </Button>
+              )}
+              <Button
+                variant="outlined"
+                color="inherit"
+                onClick={() => setJsonViewerEvent(null)}
+                sx={{
+                  minWidth: 'auto',
+                  p: 0.5,
+                  borderRadius: '50%',
+                  borderColor: 'rgba(255,255,255,0.1)',
+                  '&:hover': {
+                    bgcolor: 'rgba(255,255,255,0.05)',
+                    borderColor: 'rgba(255,255,255,0.3)',
+                  }
+                }}
+              >
+                <span style={{ fontSize: 18, lineHeight: 1, width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</span>
+              </Button>
+            </Box>
+          </DialogTitle>
+          <DialogContent sx={{ mt: 2, pb: 4 }}>
+            {jsonViewerEvent && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+                {/* Meta details */}
+                <Grid container spacing={2}>
+                  <Grid size={{ xs: 12, sm: 6 }}>
+                    <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.03)' }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Timestamp
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {new Date(jsonViewerEvent.ts * 1000).toLocaleString()} ({jsonViewerEvent.ts})
+                      </Typography>
+                    </Box>
+                  </Grid>
+                  <Grid size={{ xs: 12, sm: 6 }}>
+                    <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.03)' }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Ingestion Source
+                      </Typography>
+                      <Chip label={jsonViewerEvent.src} size="small" color="primary" variant="outlined" sx={{ mt: 0.5, fontWeight: 700 }} />
+                    </Box>
+                  </Grid>
+                </Grid>
+
+                {/* Formatted Code Block */}
+                <Box
+                  sx={{
+                    position: 'relative',
+                    borderRadius: 3,
+                    bgcolor: '#060608',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.8)',
+                    p: 2.5,
+                    maxHeight: 500,
+                    overflowY: 'auto',
+                  }}
+                >
+                  <pre style={{ margin: 0, fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: '0.875rem', lineHeight: 1.6 }}>
+                    <code dangerouslySetInnerHTML={{ __html: syntaxHighlightJson(jsonViewerEvent.data) }} />
+                  </pre>
+                </Box>
+              </Box>
+            )}
+          </DialogContent>
         </Dialog>
 
         {/* Global Notifications snackbar */}

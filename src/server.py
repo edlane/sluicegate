@@ -135,6 +135,44 @@ class SluicegateApiServer:
         self.read_key_path = os.path.join(self.streams_dir, ".read_key")
         self.read_key = self._load_or_create_read_key()
 
+    def verify_sso_token(self, token_val):
+        import hmac
+        import hashlib
+        import base64
+        import json
+        import time
+
+        try:
+            if not token_val or '.' not in token_val:
+                return False, "Malformed token format"
+
+            token_str, signature = token_val.split('.', 1)
+            
+            # Verify HMAC signature using self.api_key as secret
+            expected_sig = hmac.new(
+                self.api_key.encode('utf-8'),
+                token_str.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(expected_sig, signature):
+                print(f"[SSO] Signature mismatch on token: {signature} vs expected {expected_sig}", file=sys.stderr)
+                return False, "Invalid signature"
+                
+            # Decode and verify expiration
+            padding = '=' * (-len(token_str) % 4)
+            decoded = base64.urlsafe_b64decode(token_str + padding).decode('utf-8')
+            payload = json.loads(decoded)
+            
+            if int(payload['expiresAt']) < int(time.time() * 1000):
+                print(f"[SSO] Token has expired: {payload['expiresAt']} < {int(time.time() * 1000)}", file=sys.stderr)
+                return False, "Token expired"
+                
+            return True, payload['username']
+        except Exception as e:
+            print(f"[SSO] Exception during verification: {e}", file=sys.stderr)
+            return False, f"Malformed token: {str(e)}"
+
     def _load_or_create_api_key(self):
         if os.path.exists(self.api_key_path):
             try:
@@ -361,6 +399,16 @@ class SluicegateApiServer:
                                 print(f"[Auth Failure] Credentials mismatch. Received '{username}' / '{password}'. Expected '{self.auth_username}' / '{self.auth_password}'", file=sys.stderr)
                         except Exception as e:
                             print(f"[Auth Error] Exception parsing Basic Auth header: {e}", file=sys.stderr)
+                    elif auth_header and auth_header.startswith("Bearer "):
+                        try:
+                            token_val = auth_header.split(" ", 1)[1]
+                            valid, username = self.verify_sso_token(token_val)
+                            if valid:
+                                authenticated = True
+                            else:
+                                print(f"[Auth Failure] Bearer SSO token validation failed: {username}", file=sys.stderr)
+                        except Exception as e:
+                            print(f"[Auth Error] Exception parsing Bearer Auth header: {e}", file=sys.stderr)
                     
                     if not authenticated:
                         if path == "/api/inject":
