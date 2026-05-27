@@ -102,7 +102,7 @@ class SequentialLogStream:
     ATTR_POLL_DELAY_SEC = "user.SGC.POLL_DELAY_SEC"
 
     DEFAULT_METADATA = {
-        ATTR_MAX_BLOCKS: "104857600",    # ~50GB default max allocated blocks (512 bytes each)
+        ATTR_MAX_BLOCKS: "204800",    # ~100MB default max allocated blocks (512 bytes each)
         ATTR_MAX_AGE_MIN: "1440",        # 24 hours retention default
         ATTR_SAFETY_HEADROOM: "100",     # Trigger buffer blocks
         ATTR_POLL_DELAY_SEC: "10.0"      # Poll interval

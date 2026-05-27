@@ -314,6 +314,78 @@ class TestSluicegateApiServer(unittest.TestCase):
         """Verify the server enforces HTTP Basic Authentication correctly when active"""
         asyncio.run(self._run_auth_test())
 
+    async def _run_delete_topic_test(self):
+        port = 8599
+        server = SluicegateApiServer(self.streams_dir, self.static_dir, port=port)
+        await server.start()
+        
+        try:
+            # 1. Inject an event to create a topic
+            status, _, body = await self._client_request(
+                "POST", "/api/inject?topic=sensor_delete", 
+                body=json.dumps({"temp": 24.5}),
+                headers={"Content-Type": "application/json"},
+                port=port
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            
+            # Assert file exists
+            stream_file = os.path.join(self.streams_dir, "sensor_delete.json")
+            self.assertTrue(os.path.exists(stream_file))
+            
+            # 2. Deleting without topic param should return 400 Bad Request
+            status, _, body = await self._client_request(
+                "DELETE", "/api/topics", port=port
+            )
+            self.assertEqual(status, "HTTP/1.1 400 Bad Request")
+            
+            # 3. Delete the topic
+            status, _, body = await self._client_request(
+                "DELETE", "/api/topics?topic=sensor_delete", port=port
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            res_json = json.loads(body.decode('utf-8'))
+            self.assertEqual(res_json["status"], "success")
+            
+            # Assert file is deleted
+            self.assertFalse(os.path.exists(stream_file))
+            
+            # 4. Verify topics list is now empty
+            status, _, body = await self._client_request("GET", "/api/topics", port=port)
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            res_json = json.loads(body.decode('utf-8'))
+            self.assertEqual(len(res_json["topics"]), 0)
+            
+        finally:
+            await server.stop()
+
+    def test_delete_topic(self):
+        """Verify that the DELETE /api/topics endpoint successfully deletes a topic and removes its file from disk"""
+        asyncio.run(self._run_delete_topic_test())
+
+    async def _run_url_encoded_topic_test(self):
+        port = 18889
+        server = SluicegateApiServer(self.streams_dir, self.static_dir, port=port)
+        await server.start()
+        try:
+            # 1. Inject to a URL-encoded topic: fcm%2Ffeedback -> fcm/feedback
+            status, _, body = await self._client_request(
+                "POST", "/api/inject?topic=fcm%2Ffeedback",
+                body=b'{"payload": "test"}', port=port
+            )
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            
+            # 2. Check if the file is created at nested path fcm/feedback.json
+            stream_file = os.path.join(self.streams_dir, "fcm", "feedback.json")
+            self.assertTrue(os.path.exists(stream_file))
+            
+        finally:
+            await server.stop()
+
+    def test_url_encoded_topic(self):
+        """Verify Sluicegate server URL-decodes query parameters (e.g. topic name %2F) correctly"""
+        asyncio.run(self._run_url_encoded_topic_test())
+
 
 if __name__ == "__main__":
     unittest.main()

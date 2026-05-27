@@ -30,6 +30,7 @@ import {
   Snackbar,
   Alert,
   Chip,
+  TableSortLabel,
 } from '@mui/material';
 import {
   Speed,
@@ -47,6 +48,9 @@ import {
   VpnKey,
   ContentCopy,
   Visibility,
+  Folder,
+  FolderOpen,
+  ChevronRight,
 } from '@mui/icons-material';
 
 
@@ -115,6 +119,48 @@ const theme = createTheme({
   },
 });
 
+interface TreeNode {
+  name: string;
+  fullName: string;
+  isLeaf: boolean;
+  topicData?: Topic;
+  children: Record<string, TreeNode>;
+}
+
+function buildTopicTree(topicsList: Topic[]): TreeNode {
+  const root: TreeNode = {
+    name: 'Root',
+    fullName: '',
+    isLeaf: false,
+    children: {},
+  };
+
+  for (const topic of topicsList) {
+    const parts = topic.name.split('/');
+    let current = root;
+    let accumulatedPath = '';
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      accumulatedPath = accumulatedPath ? `${accumulatedPath}/${part}` : part;
+      const isLast = i === parts.length - 1;
+
+      if (!current.children[part]) {
+        current.children[part] = {
+          name: part,
+          fullName: accumulatedPath,
+          isLeaf: isLast,
+          children: {},
+          topicData: isLast ? topic : undefined,
+        };
+      }
+      current = current.children[part];
+    }
+  }
+
+  return root;
+}
+
 interface Topic {
   name: string;
   size_bytes: number;
@@ -167,6 +213,8 @@ export default function App() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newTopicName, setNewTopicName] = useState('');
   const [notification, setNotification] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTopicName, setDeleteTopicName] = useState('');
 
   // Edit Config state
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
@@ -175,12 +223,149 @@ export default function App() {
   const [configMaxAgeMin, setConfigMaxAgeMin] = useState<string>('');
   const [updatingConfig, setUpdatingConfig] = useState(false);
 
+  const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
+
+  const topicTree = useMemo(() => {
+    return buildTopicTree(topics);
+  }, [topics]);
+
+  const toggleNode = (nodePath: string) => {
+    setExpandedNodes(prev => ({
+      ...prev,
+      [nodePath]: !prev[nodePath]
+    }));
+  };
+
+  const renderTreeNodes = (node: TreeNode, depth = 0) => {
+    const sortedKeys = Object.keys(node.children).sort();
+    
+    return sortedKeys.map(key => {
+      const child = node.children[key];
+      const isExpanded = !!expandedNodes[child.fullName];
+      const isSelected = selectedTopic === child.fullName;
+      
+      if (child.isLeaf) {
+        return (
+          <Box key={child.fullName}>
+            <Box
+              onClick={() => setSelectedTopic(child.fullName)}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                pl: depth * 2.5 + 2,
+                pr: 2,
+                py: 1.2,
+                cursor: 'pointer',
+                borderRadius: 2,
+                transition: 'all 0.2s',
+                bgcolor: isSelected ? 'rgba(124, 77, 255, 0.15)' : 'transparent',
+                borderLeft: isSelected ? '3px solid #7c4dff' : '3px solid transparent',
+                '&:hover': {
+                  bgcolor: isSelected ? 'rgba(124, 77, 255, 0.2)' : 'rgba(255, 255, 255, 0.03)',
+                }
+              }}
+            >
+              <Storage sx={{ fontSize: 18, color: isSelected ? 'secondary.main' : 'text.secondary' }} />
+              <Typography
+                variant="body2"
+                sx={{
+                  fontFamily: 'monospace',
+                  fontWeight: isSelected ? 700 : 500,
+                  color: isSelected ? '#fff' : 'text.primary',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {decodeURIComponent(child.name)}
+              </Typography>
+            </Box>
+          </Box>
+        );
+      } else {
+        return (
+          <Box key={child.fullName}>
+            <Box
+              onClick={() => toggleNode(child.fullName)}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                pl: depth * 2.5 + 2,
+                pr: 2,
+                py: 1.2,
+                cursor: 'pointer',
+                borderRadius: 2,
+                transition: 'all 0.2s',
+                color: 'text.primary',
+                '&:hover': {
+                  bgcolor: 'rgba(255, 255, 255, 0.03)',
+                }
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', color: 'text.secondary', transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>
+                <ChevronRight sx={{ fontSize: 18 }} />
+              </Box>
+              <Box sx={{ color: '#b47cff', display: 'flex', alignItems: 'center' }}>
+                {isExpanded ? <FolderOpen sx={{ fontSize: 18 }} /> : <Folder sx={{ fontSize: 18 }} />}
+              </Box>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  color: 'text.primary',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {decodeURIComponent(child.name)}
+              </Typography>
+            </Box>
+            
+            {/* Expanded Children */}
+            {isExpanded && (
+              <Box sx={{ position: 'relative' }}>
+                {/* Vertical guide line */}
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    left: depth * 2.5 + 11,
+                    top: 0,
+                    bottom: 0,
+                    width: '1px',
+                    bgcolor: 'rgba(255, 255, 255, 0.05)'
+                  }}
+                />
+                {renderTreeNodes(child, depth + 1)}
+              </Box>
+            )}
+          </Box>
+        );
+      }
+    });
+  };
+
   // Historical Explorer state
   const [historicalEvents, setHistoricalEvents] = useState<LogEvent[]>([]);
   const [explorerStartIdx, setExplorerStartIdx] = useState<string>('-10'); // negative default relative
   const [explorerLimit, setExplorerLimit] = useState<number>(50);
   const [explorerLoading, setExplorerLoading] = useState(false);
   const [jsonViewerEvent, setJsonViewerEvent] = useState<LogEvent | null>(null);
+  const [sortDescending, setSortDescending] = useState<boolean>(true);
+
+  // Compute sorted events
+  const sortedEvents = useMemo(() => {
+    const eventsCopy = [...historicalEvents];
+    return eventsCopy.sort((a, b) => {
+      if (sortDescending) {
+        return b.offset - a.offset;
+      } else {
+        return a.offset - b.offset;
+      }
+    });
+  }, [historicalEvents, sortDescending]);
 
   // Ingestion Composer state
   const [injectPayload, setInjectPayload] = useState<string>('{\n  "event": "device_telemetry",\n  "status": "normal",\n  "metric": 42.5\n}');
@@ -345,14 +530,18 @@ export default function App() {
   const handleCreateTopic = async () => {
     if (!newTopicName.trim()) return;
     try {
-      const cleanName = newTopicName.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+      let cleanName = newTopicName.trim()
+        .replace(/\\/g, '/')
+        .replace(/[^a-zA-Z0-9_\-\/]/g, '')
+        .replace(/\/+/g, '/')
+        .replace(/^\/|\/$/g, '');
       const res = await authFetch(`/api/inject?topic=${cleanName}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sys: 'topic_bootstrap', ts: Date.now() }),
       });
       if (res.ok) {
-        showNotify(`Topic "${cleanName}" created successfully!`, 'success');
+        showNotify(`Topic "${decodeURIComponent(cleanName)}" created successfully!`, 'success');
         setNewTopicName('');
         setCreateDialogOpen(false);
         fetchTopics();
@@ -362,6 +551,33 @@ export default function App() {
       }
     } catch (e) {
       showNotify(`Error creating topic: ${e}`, 'error');
+    }
+  };
+
+  const handleDeleteTopic = async () => {
+    if (!deleteTopicName) return;
+    try {
+      const res = await authFetch(`/api/topics?topic=${deleteTopicName}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        showNotify(`Topic "${decodeURIComponent(deleteTopicName)}" deleted successfully!`, 'success');
+        setDeleteDialogOpen(false);
+        setDeleteTopicName('');
+        fetchTopics();
+        setSelectedTopic(prev => {
+          if (prev === deleteTopicName) {
+            const remaining = topics.filter(t => t.name !== deleteTopicName);
+            return remaining.length > 0 ? remaining[0].name : '';
+          }
+          return prev;
+        });
+      } else {
+        const errData = await res.json();
+        showNotify(errData.error || 'Failed to delete topic', 'error');
+      }
+    } catch (e) {
+      showNotify(`Error deleting topic: ${e}`, 'error');
     }
   };
 
@@ -607,7 +823,7 @@ export default function App() {
           <Card sx={{
             maxWidth: 400,
             width: '100%',
-            p: 4,
+            p: { xs: 2.5, sm: 4 },
             background: 'rgba(18, 18, 22, 0.65)',
             backdropFilter: 'blur(20px)',
             border: '1px solid rgba(255, 255, 255, 0.08)',
@@ -701,22 +917,25 @@ export default function App() {
         {/* Header App Bar */}
         <AppBar position="static" elevation={0} sx={{ background: 'rgba(18, 18, 22, 0.8)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
           <Container maxWidth="xl">
-            <Toolbar disableGutters sx={{ justifyContent: 'space-between' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Toolbar disableGutters sx={{ justifyContent: 'space-between', flexDirection: 'row', flexWrap: 'wrap', py: { xs: 1, sm: 0 }, gap: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.5 } }}>
                 <Box sx={{ p: 1, borderRadius: 2, background: 'linear-gradient(135deg, #7c4dff, #00e5ff)', display: 'flex' }}>
-                  <Storage sx={{ color: '#fff' }} />
+                  <Storage sx={{ color: '#fff', fontSize: { xs: 20, sm: 24 } }} />
                 </Box>
-                <Typography variant="h5" component="div" sx={{ fontWeight: 800, letterSpacing: '-0.03em', background: 'linear-gradient(45deg, #f5f5f7, #a0a0b0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                <Typography variant="h5" component="div" sx={{ fontWeight: 800, fontSize: { xs: '1.25rem', sm: '1.5rem' }, letterSpacing: '-0.03em', background: 'linear-gradient(45deg, #f5f5f7, #a0a0b0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                   SLUICEGATE
                 </Typography>
-                <Chip label="Edge Admin" size="small" color="primary" sx={{ fontWeight: 700, ml: 1, height: 20 }} />
+                <Chip label="Edge Admin" size="small" color="primary" sx={{ fontWeight: 700, ml: { xs: 0.5, sm: 1 }, height: 20, fontSize: '0.65rem' }} />
               </Box>
 
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8 }}>
                   <FiberManualRecord sx={{ color: serverOnline ? '#4caf50' : '#f44336', fontSize: 14 }} />
-                  <Typography variant="body2" sx={{ fontWeight: 700, color: serverOnline ? '#4caf50' : '#f44336' }}>
+                  <Typography variant="body2" sx={{ fontWeight: 700, color: serverOnline ? '#4caf50' : '#f44336', display: { xs: 'none', sm: 'inline-block' } }}>
                     {serverOnline ? 'SERVER ONLINE' : 'DISCONNECTED'}
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700, color: serverOnline ? '#4caf50' : '#f44336', display: { xs: 'inline-block', sm: 'none' }, fontSize: '0.75rem' }}>
+                    {serverOnline ? 'ONLINE' : 'OFFLINE'}
                   </Typography>
                 </Box>
               </Box>
@@ -731,10 +950,13 @@ export default function App() {
             onChange={(_, val) => setTabValue(val)}
             textColor="primary"
             indicatorColor="primary"
+            variant="scrollable"
+            scrollButtons="auto"
+            allowScrollButtonsMobile
             sx={{
               mb: 4,
               borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-              '& .MuiTab-root': { fontWeight: 700, fontSize: '0.95rem', minWidth: 120 }
+              '& .MuiTab-root': { fontWeight: 700, fontSize: '0.95rem', minWidth: { xs: 80, sm: 120 } }
             }}
           >
             <Tab label="Dashboard" />
@@ -800,7 +1022,7 @@ export default function App() {
                         <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                           <Send color="primary" /> Quick Event Ingest
                         </Typography>
-                        {selectedTopic && <Chip label={`Target: ${selectedTopic}`} size="small" variant="outlined" color="primary" />}
+                        {selectedTopic && <Chip label={`Target: ${decodeURIComponent(selectedTopic)}`} size="small" variant="outlined" color="primary" />}
                       </Box>
                       
                       <TextField
@@ -850,7 +1072,7 @@ export default function App() {
                             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <Box sx={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.05)', pb: 1.5 }}>
                                 <Typography color="text.secondary">Current Active Stream:</Typography>
-                                <Typography sx={{ fontWeight: 700, color: 'secondary.main' }}>{selectedTopic}.json</Typography>
+                                <Typography sx={{ fontWeight: 700, color: 'secondary.main' }}>{decodeURIComponent(selectedTopic)}.json</Typography>
                               </Box>
                               <Box sx={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.05)', pb: 1.5 }}>
                                 <Typography color="text.secondary">Physical File Size:</Typography>
@@ -882,67 +1104,225 @@ export default function App() {
           {/* TAB 1: TOPIC MANAGER */}
           {tabValue === 1 && (
             <Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                <Typography variant="h5" sx={{ fontWeight: 700 }}>Active Sequential Topic Streams</Typography>
-                <Box sx={{ display: 'flex', gap: 2 }}>
-                  <Button variant="outlined" color="primary" onClick={fetchTopics} startIcon={<Refresh />}>
+              <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', alignItems: { xs: 'stretch', sm: 'center' }, gap: 2, mb: 3 }}>
+                <Typography variant="h5" sx={{ fontWeight: 700, fontSize: { xs: '1.25rem', sm: '1.5rem' } }}>Active Sequential Topic Streams</Typography>
+                <Box sx={{ display: 'flex', gap: 1.5, flexDirection: { xs: 'column', sm: 'row' } }}>
+                  <Button variant="outlined" color="primary" onClick={fetchTopics} startIcon={<Refresh />} fullWidth>
                     Refresh Stats
                   </Button>
-                  <Button variant="contained" color="primary" onClick={() => setCreateDialogOpen(true)} startIcon={<Add />}>
+                  <Button variant="contained" color="primary" onClick={() => setCreateDialogOpen(true)} startIcon={<Add />} fullWidth>
                     Create New Topic
                   </Button>
                 </Box>
               </Box>
 
-              <Grid container spacing={3}>
-                {topics.map((t) => (
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }} key={t.name}>
-                    <Card>
-                      <CardContent sx={{ p: 3 }}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                          <Typography variant="h6" sx={{ fontWeight: 700, color: 'primary.light' }}>{t.name}</Typography>
-                          <Chip label={`${t.allocated_blocks} blocks`} size="small" color="secondary" variant="outlined" />
+              <Grid container spacing={4}>
+                {/* Left Side: Tree View */}
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                    <CardContent sx={{ p: 3, flexGrow: 1, maxHeight: 600, overflowY: 'auto' }}>
+                      <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 3 }}>
+                        <FolderOpen color="primary" /> Streams Directory Tree
+                      </Typography>
+                      {topics.length > 0 ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                          {renderTreeNodes(topicTree)}
                         </Box>
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <Typography variant="body2" color="text.secondary">Physical size:</Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{formatBytes(t.size_bytes)}</Typography>
-                          </Box>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <Typography variant="body2" color="text.secondary">Sectors allocated:</Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{t.allocated_blocks}</Typography>
-                          </Box>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <Typography variant="body2" color="text.secondary">Max blocks cap:</Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{t.max_blocks.toLocaleString()}</Typography>
-                          </Box>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <Typography variant="body2" color="text.secondary">Age threshold:</Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{t.max_age_min} minutes</Typography>
-                          </Box>
+                      ) : (
+                        <Box sx={{ py: 6, textAlign: 'center', color: 'text.secondary' }}>
+                          No topics found. Create a topic above to begin.
                         </Box>
-                        <Box sx={{ display: 'flex', gap: 1.5 }}>
-                          <Button size="small" variant="contained" fullWidth onClick={() => { setSelectedTopic(t.name); setTabValue(2); }}>
-                            Explore Events
-                          </Button>
-                          <Button size="small" variant="outlined" fullWidth onClick={() => { setSelectedTopic(t.name); setTabValue(3); }}>
-                            Live Console
-                          </Button>
+                      )}
+                    </CardContent>
+                  </Card>
+                </Grid>
+
+                {/* Right Side: Selected Topic Card Details */}
+                <Grid size={{ xs: 12, md: 8 }}>
+                  {selectedTopic ? (
+                    (() => {
+                      const t = topics.find(topic => topic.name === selectedTopic);
+                      if (!t) return null;
+                      return (
+                        <Card sx={{ height: '100%', background: 'rgba(124, 77, 255, 0.05)', borderColor: 'rgba(124, 77, 255, 0.15)' }}>
+                          <CardContent sx={{ p: 4 }}>
+                            {/* Card Header with decodings */}
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 3, gap: 2 }}>
+                              <Box sx={{ minWidth: 0, flexGrow: 1 }}>
+                                {t.name.includes('/') && (
+                                  <Typography
+                                    variant="caption"
+                                    sx={{
+                                      display: 'block',
+                                      color: 'text.secondary',
+                                      fontFamily: 'monospace',
+                                      fontSize: '0.85rem',
+                                      mb: 0.5,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap'
+                                    }}
+                                  >
+                                    {decodeURIComponent(t.name.substring(0, t.name.lastIndexOf('/')))}/
+                                  </Typography>
+                                )}
+                                <Typography
+                                  variant="h4"
+                                  sx={{
+                                    fontWeight: 800,
+                                    color: 'primary.light',
+                                    letterSpacing: '-0.02em',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}
+                                >
+                                  {decodeURIComponent(t.name.includes('/') ? t.name.substring(t.name.lastIndexOf('/') + 1) : t.name)}
+                                </Typography>
+                              </Box>
+                              <Chip label={`${t.allocated_blocks} blocks`} color="secondary" variant="outlined" sx={{ fontWeight: 700 }} />
+                            </Box>
+
+                            {/* Divider */}
+                            <Box sx={{ height: '1px', bgcolor: 'rgba(255, 255, 255, 0.08)', mb: 3 }} />
+
+                            {/* Details Grid */}
+                            <Grid container spacing={3} sx={{ mb: 4 }}>
+                              <Grid size={{ xs: 12, sm: 6 }}>
+                                <Box sx={{ p: 2, borderRadius: 3, bgcolor: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 700, textTransform: 'uppercase', mb: 0.5 }}>
+                                    Physical Size
+                                  </Typography>
+                                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                    {formatBytes(t.size_bytes)}
+                                  </Typography>
+                                </Box>
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6 }}>
+                                <Box sx={{ p: 2, borderRadius: 3, bgcolor: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 700, textTransform: 'uppercase', mb: 0.5 }}>
+                                    Sectors Allocated
+                                  </Typography>
+                                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                    {t.allocated_blocks}
+                                  </Typography>
+                                </Box>
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6 }}>
+                                <Box sx={{ p: 2, borderRadius: 3, bgcolor: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 700, textTransform: 'uppercase', mb: 0.5 }}>
+                                    Max Allocation Cap (Blocks)
+                                  </Typography>
+                                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                    {t.max_blocks.toLocaleString()}
+                                  </Typography>
+                                </Box>
+                              </Grid>
+                              <Grid size={{ xs: 12, sm: 6 }}>
+                                <Box sx={{ p: 2, borderRadius: 3, bgcolor: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 700, textTransform: 'uppercase', mb: 0.5 }}>
+                                    Age Retention Threshold
+                                  </Typography>
+                                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                    {t.max_age_min} minutes
+                                  </Typography>
+                                </Box>
+                              </Grid>
+                            </Grid>
+
+                            {/* Core Action Menu */}
+                            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', mb: 2, fontSize: '0.75rem', letterSpacing: '0.05em' }}>
+                              Core Operations
+                            </Typography>
+                            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, mb: 3 }}>
+                              <Button
+                                variant="contained"
+                                color="primary"
+                                onClick={() => { setTabValue(2); }}
+                                startIcon={<Search />}
+                                sx={{ py: 1.5, px: 3 }}
+                              >
+                                Explore Events
+                              </Button>
+                              <Button
+                                variant="outlined"
+                                color="primary"
+                                onClick={() => { setTabValue(3); }}
+                                startIcon={<Speed />}
+                                sx={{ py: 1.5, px: 3 }}
+                              >
+                                Live Console
+                              </Button>
+                              <Button
+                                variant="outlined"
+                                color="secondary"
+                                onClick={() => {
+                                  setConfigTopicName(t.name);
+                                  setConfigMaxBlocks(t.max_blocks.toString());
+                                  setConfigMaxAgeMin(t.max_age_min.toString());
+                                  setConfigDialogOpen(true);
+                                }}
+                                startIcon={<Refresh />}
+                                sx={{ py: 1.5, px: 3 }}
+                              >
+                                Edit Configuration
+                              </Button>
+                            </Box>
+
+                            <Box sx={{ height: '1px', bgcolor: 'rgba(255, 255, 255, 0.08)', my: 3 }} />
+
+                            <Typography variant="body2" color="error.main" sx={{ fontWeight: 700, textTransform: 'uppercase', mb: 2, fontSize: '0.75rem', letterSpacing: '0.05em' }}>
+                              Danger Zone
+                            </Typography>
+                            <Button
+                              variant="outlined"
+                              color="error"
+                              onClick={() => {
+                                setDeleteTopicName(t.name);
+                                setDeleteDialogOpen(true);
+                              }}
+                              startIcon={<Delete />}
+                              sx={{
+                                py: 1.5,
+                                px: 3,
+                                borderStyle: 'dashed',
+                                '&:hover': { borderStyle: 'solid', bgcolor: 'rgba(244, 67, 54, 0.05)' }
+                              }}
+                            >
+                              Delete Topic Stream
+                            </Button>
+                          </CardContent>
+                        </Card>
+                      );
+                    })()
+                  ) : (
+                    <Card sx={{ height: '100%', borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <CardContent sx={{ p: 4, textAlign: 'center', maxWidth: 400 }}>
+                        <Box sx={{
+                          p: 2.5,
+                          borderRadius: '50%',
+                          background: 'rgba(124, 77, 255, 0.05)',
+                          color: 'primary.main',
+                          display: 'inline-flex',
+                          mb: 2.5,
+                          border: '1px solid rgba(124, 77, 255, 0.1)',
+                          animation: 'pulse 2s infinite',
+                          '@keyframes pulse': {
+                            '0%': { transform: 'scale(1)', boxShadow: '0 0 0 0 rgba(124, 77, 255, 0.4)' },
+                            '70%': { transform: 'scale(1.05)', boxShadow: '0 0 0 10px rgba(124, 77, 255, 0)' },
+                            '100%': { transform: 'scale(1)', boxShadow: '0 0 0 0 rgba(124, 77, 255, 0)' }
+                          }
+                        }}>
+                          <Storage sx={{ fontSize: 36 }} />
                         </Box>
-                        <Box sx={{ display: 'flex', gap: 1.5, mt: 1.5 }}>
-                          <Button size="small" variant="outlined" color="secondary" fullWidth onClick={() => {
-                            setConfigTopicName(t.name);
-                            setConfigMaxBlocks(t.max_blocks.toString());
-                            setConfigMaxAgeMin(t.max_age_min.toString());
-                            setConfigDialogOpen(true);
-                          }}>
-                            Edit Config
-                          </Button>
-                        </Box>
+                        <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>No Stream Selected</Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
+                          Select a leaf node topic stream from the directory tree on the left to view detailed metrics, modify allocation xattrs, explore historical telemetry blocks, or delete the stream.
+                        </Typography>
                       </CardContent>
                     </Card>
-                  </Grid>
-                ))}
+                  )}
+                </Grid>
               </Grid>
             </Box>
           )}
@@ -966,7 +1346,7 @@ export default function App() {
                         slotProps={{ select: { native: true } }}
                       >
                         {topics.map((t) => (
-                          <option key={t.name} value={t.name} style={{ backgroundColor: '#121216' }}>{t.name}</option>
+                          <option key={t.name} value={t.name} style={{ backgroundColor: '#121216' }}>{decodeURIComponent(t.name)}</option>
                         ))}
                       </TextField>
                     </Grid>
@@ -1010,32 +1390,48 @@ export default function App() {
                 <Table>
                   <TableHead sx={{ bgcolor: 'rgba(124, 77, 255, 0.05)' }}>
                     <TableRow>
-                      <TableCell sx={{ fontWeight: 700 }}>Record Offset</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Timestamp</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Ingest Source</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Payload Data</TableCell>
+                      <TableCell sx={{ fontWeight: 700, px: { xs: 1, sm: 2 } }}>
+                        <TableSortLabel
+                          active={true}
+                          direction={sortDescending ? 'desc' : 'asc'}
+                          onClick={() => setSortDescending(!sortDescending)}
+                        >
+                          Record Offset
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell sx={{ fontWeight: 700, px: { xs: 1, sm: 2 } }}>
+                        <TableSortLabel
+                          active={true}
+                          direction={sortDescending ? 'desc' : 'asc'}
+                          onClick={() => setSortDescending(!sortDescending)}
+                        >
+                          Timestamp
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' }, fontWeight: 700, px: { xs: 1, sm: 2 } }}>Ingest Source</TableCell>
+                      <TableCell sx={{ fontWeight: 700, px: { xs: 1, sm: 2 } }}>Payload Data</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {historicalEvents.length > 0 ? (
-                      historicalEvents.map((evt) => (
+                    {sortedEvents.length > 0 ? (
+                      sortedEvents.map((evt) => (
                         <TableRow key={evt.offset} sx={{ '&:last-child td, &:last-child th': { border: 0 } }}>
-                          <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'secondary.main' }}>
+                          <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'secondary.main', px: { xs: 1, sm: 2 } }}>
                             {evt.offset.toLocaleString()}
                           </TableCell>
-                          <TableCell sx={{ color: 'text.secondary' }}>
+                          <TableCell sx={{ color: 'text.secondary', px: { xs: 1, sm: 2 }, fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
                             {new Date(evt.ts * 1000).toLocaleString()}
                           </TableCell>
-                          <TableCell>
+                          <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' }, px: { xs: 1, sm: 2 } }}>
                             <Chip label={evt.src} size="small" color="primary" variant="outlined" sx={{ height: 20 }} />
                           </TableCell>
-                          <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.825rem', maxWidth: 450 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+                          <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.825rem', maxWidth: { xs: 120, sm: 450 }, px: { xs: 1, sm: 2 } }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
                               <Typography
                                 variant="body2"
                                 sx={{
                                   fontFamily: 'monospace',
-                                  fontSize: '0.825rem',
+                                  fontSize: { xs: '0.75rem', sm: '0.825rem' },
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
@@ -1049,11 +1445,10 @@ export default function App() {
                                 size="small"
                                 variant="outlined"
                                 onClick={() => setJsonViewerEvent(evt)}
-                                startIcon={<Visibility sx={{ fontSize: 14 }} />}
                                 sx={{
                                   py: 0.25,
-                                  px: 1.5,
-                                  fontSize: '0.75rem',
+                                  px: { xs: 0.5, sm: 1.5 },
+                                  fontSize: '0.7rem',
                                   minWidth: 'auto',
                                   borderColor: 'rgba(255, 255, 255, 0.15)',
                                   color: 'text.primary',
@@ -1064,7 +1459,8 @@ export default function App() {
                                   }
                                 }}
                               >
-                                Inspect
+                                <Visibility sx={{ fontSize: 14, mr: { xs: 0, sm: 0.5 } }} />
+                                <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Inspect</Box>
                               </Button>
                             </Box>
                           </TableCell>
@@ -1102,7 +1498,7 @@ export default function App() {
                         slotProps={{ select: { native: true } }}
                       >
                         {topics.map((t) => (
-                          <option key={t.name} value={t.name} style={{ backgroundColor: '#121216' }}>{t.name}</option>
+                          <option key={t.name} value={t.name} style={{ backgroundColor: '#121216' }}>{decodeURIComponent(t.name)}</option>
                         ))}
                       </TextField>
                     </Grid>
@@ -1146,13 +1542,13 @@ export default function App() {
 
               {/* Console Output Screen */}
               <Box sx={{ display: 'flex', flexDirection: 'column', borderRadius: 4, border: '1px solid rgba(255,255,255,0.05)', overflow: 'hidden', height: 450, bgcolor: '#000' }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', px: 3, py: 1.5, borderBottom: '1px solid rgba(255,255,255,0.05)', bgcolor: 'rgba(255,255,255,0.02)' }}>
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.secondary' }}>
-                    TERMINAL SSE RECEIVER: {selectedTopic || 'none'}
+                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, gap: 1.5, px: { xs: 2, sm: 3 }, py: 1.5, borderBottom: '1px solid rgba(255,255,255,0.05)', bgcolor: 'rgba(255,255,255,0.02)' }}>
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.secondary', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
+                    TERMINAL SSE: {selectedTopic ? decodeURIComponent(selectedTopic) : 'none'}
                   </Typography>
-                  <Box sx={{ display: 'flex', gap: 2 }}>
-                    <Chip label={`Live Frame Count: ${streamThroughput}`} size="small" color="secondary" sx={{ height: 20 }} />
-                    <Chip label={streamActive ? 'SUBSCRIBED' : 'IDLE'} size="small" color={streamActive ? 'success' : 'default'} sx={{ height: 20 }} />
+                  <Box sx={{ display: 'flex', gap: 1.5, width: { xs: '100%', sm: 'auto' }, justifyContent: { xs: 'space-between', sm: 'flex-end' } }}>
+                    <Chip label={`Live: ${streamThroughput}`} size="small" color="secondary" sx={{ height: 20, fontSize: '0.7rem' }} />
+                    <Chip label={streamActive ? 'SUBSCRIBED' : 'IDLE'} size="small" color={streamActive ? 'success' : 'default'} sx={{ height: 20, fontSize: '0.7rem' }} />
                   </Box>
                 </Box>
                 
@@ -1203,7 +1599,7 @@ export default function App() {
                     <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, textTransform: 'uppercase', color: 'text.secondary', fontSize: '0.75rem', letterSpacing: '0.05em' }}>
                       Current Ingestion API Key
                     </Typography>
-                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, alignItems: 'stretch' }}>
                       <TextField
                         fullWidth
                         type={showApiKey ? 'text' : 'password'}
@@ -1215,22 +1611,24 @@ export default function App() {
                           }
                         }}
                       />
-                      <Button
-                        variant="outlined"
-                        onClick={() => setShowApiKey(!showApiKey)}
-                        sx={{ minWidth: 100, height: 56 }}
-                      >
-                        {showApiKey ? 'Hide' : 'Show'}
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        color="secondary"
-                        onClick={() => copyToClipboard(apiKey, 'Ingestion API Key')}
-                        startIcon={<ContentCopy />}
-                        sx={{ minWidth: 100, height: 56 }}
-                      >
-                        Copy
-                      </Button>
+                      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'stretch' }}>
+                        <Button
+                          variant="outlined"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          sx={{ flexGrow: 1, minWidth: { xs: 'auto', sm: 100 }, height: 56 }}
+                        >
+                          {showApiKey ? 'Hide' : 'Show'}
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          color="secondary"
+                          onClick={() => copyToClipboard(apiKey, 'Ingestion API Key')}
+                          startIcon={<ContentCopy />}
+                          sx={{ flexGrow: 1, minWidth: { xs: 'auto', sm: 100 }, height: 56 }}
+                        >
+                          Copy
+                        </Button>
+                      </Box>
                     </Box>
                   </Box>
 
@@ -1297,7 +1695,7 @@ export default function App() {
                     <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, textTransform: 'uppercase', color: 'text.secondary', fontSize: '0.75rem', letterSpacing: '0.05em' }}>
                       Current Read Access Key
                     </Typography>
-                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, alignItems: 'stretch' }}>
                       <TextField
                         fullWidth
                         type={showReadKey ? 'text' : 'password'}
@@ -1309,22 +1707,24 @@ export default function App() {
                           }
                         }}
                       />
-                      <Button
-                        variant="outlined"
-                        onClick={() => setShowReadKey(!showReadKey)}
-                        sx={{ minWidth: 100, height: 56 }}
-                      >
-                        {showReadKey ? 'Hide' : 'Show'}
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        color="secondary"
-                        onClick={() => copyToClipboard(readKey, 'Read Access Key')}
-                        startIcon={<ContentCopy />}
-                        sx={{ minWidth: 100, height: 56 }}
-                      >
-                        Copy
-                      </Button>
+                      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'stretch' }}>
+                        <Button
+                          variant="outlined"
+                          onClick={() => setShowReadKey(!showReadKey)}
+                          sx={{ flexGrow: 1, minWidth: { xs: 'auto', sm: 100 }, height: 56 }}
+                        >
+                          {showReadKey ? 'Hide' : 'Show'}
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          color="secondary"
+                          onClick={() => copyToClipboard(readKey, 'Read Access Key')}
+                          startIcon={<ContentCopy />}
+                          sx={{ flexGrow: 1, minWidth: { xs: 'auto', sm: 100 }, height: 56 }}
+                        >
+                          Copy
+                        </Button>
+                      </Box>
                     </Box>
                   </Box>
 
@@ -1380,10 +1780,28 @@ export default function App() {
 
 
 
+        {/* Delete Topic Dialog */}
+        <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)} fullWidth maxWidth="xs">
+          <DialogTitle sx={{ fontWeight: 700 }}>Delete Topic Stream</DialogTitle>
+          <DialogContent sx={{ minWidth: { xs: 'auto', sm: 350 } }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+              Are you sure you want to permanently delete the topic <strong>{decodeURIComponent(deleteTopicName)}</strong>?
+              This will close all active streams, cancel all real-time subscriptions, and delete the telemetry data file on disk.
+            </Typography>
+            <Typography variant="body2" color="error.main" sx={{ fontWeight: 700 }}>
+              This action is irreversible.
+            </Typography>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 3 }}>
+            <Button onClick={() => setDeleteDialogOpen(false)} color="inherit">Cancel</Button>
+            <Button onClick={handleDeleteTopic} variant="contained" color="error">Delete</Button>
+          </DialogActions>
+        </Dialog>
+
         {/* Create Topic Dialog */}
-        <Dialog open={createDialogOpen} onClose={() => setCreateDialogOpen(false)}>
+        <Dialog open={createDialogOpen} onClose={() => setCreateDialogOpen(false)} fullWidth maxWidth="xs">
           <DialogTitle sx={{ fontWeight: 700 }}>Bootstrap New Topic Stream</DialogTitle>
-          <DialogContent sx={{ minWidth: 350 }}>
+          <DialogContent sx={{ minWidth: { xs: 'auto', sm: 350 } }}>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
               Initialize a clean, high-performance sequential data stream topic. 
               The server will dynamically map this topic to disk and create its metadata descriptors.
@@ -1405,11 +1823,11 @@ export default function App() {
         </Dialog>
 
         {/* Edit Config Dialog */}
-        <Dialog open={configDialogOpen} onClose={() => setConfigDialogOpen(false)}>
+        <Dialog open={configDialogOpen} onClose={() => setConfigDialogOpen(false)} fullWidth maxWidth="xs">
           <DialogTitle sx={{ fontWeight: 700 }}>Edit Topic Configuration</DialogTitle>
-          <DialogContent sx={{ minWidth: 350 }}>
+          <DialogContent sx={{ minWidth: { xs: 'auto', sm: 350 } }}>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Update inode extended attribute (xattr) config parameters for topic <strong>{configTopicName}</strong>. 
+              Update inode extended attribute (xattr) config parameters for topic <strong>{decodeURIComponent(configTopicName)}</strong>. 
               Changes are reactively caught and enforced instantly.
             </Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
@@ -1539,7 +1957,7 @@ export default function App() {
                     boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.8)',
                     p: 2.5,
                     maxHeight: 500,
-                    overflowY: 'auto',
+                    overflow: 'auto',
                   }}
                 >
                   <pre style={{ margin: 0, fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: '0.875rem', lineHeight: 1.6 }}>

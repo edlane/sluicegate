@@ -10,6 +10,7 @@ import asyncio
 import mimetypes
 import base64
 import secrets
+import urllib.parse
 
 
 # Append src directory to import path
@@ -219,15 +220,18 @@ class SluicegateApiServer:
 
 
     def _get_stream_path(self, topic):
-
         # Prevent path traversal attacks
-        safe_topic = os.path.basename(topic).replace(".json", "")
-        return os.path.join(self.streams_dir, f"{safe_topic}.json")
+        clean_topic = topic.replace("..", "").replace("\\", "").strip("/")
+        safe_path = os.path.abspath(os.path.join(self.streams_dir, clean_topic))
+        if not safe_path.startswith(self.streams_dir):
+            raise ValueError("Path traversal detected")
+        return safe_path + ".json"
 
     def _init_topic(self, topic):
         if topic not in self.topic_events:
             path = self._get_stream_path(topic)
             if not os.path.exists(path):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, 'w') as f:
                     pass
             if topic not in self.active_streams:
@@ -259,17 +263,20 @@ class SluicegateApiServer:
         print(f"    - Serving web assets from:  {self.static_dir}")
 
     def _rescan_topics(self):
-        for f in os.listdir(self.streams_dir):
-            if f.endswith('.json'):
-                topic = f[:-5]
-                # Initialize offset tracker and tasks
-                stream = self._get_stream(topic)
-                _, size = stream.get_physical_stats()
-                if topic not in self.topic_offsets:
-                    self.topic_offsets[topic] = size
-                if topic not in self.topic_events:
-                    self.topic_events[topic] = asyncio.Event()
-                    self.topic_broadcast_tasks[topic] = asyncio.create_task(self._broadcast_loop(topic))
+        for root, _, files in os.walk(self.streams_dir):
+            for f in files:
+                if f.endswith('.json'):
+                    abs_path = os.path.join(root, f)
+                    rel_path = os.path.relpath(abs_path, self.streams_dir)
+                    topic = rel_path[:-5]
+                    # Initialize offset tracker and tasks
+                    stream = self._get_stream(topic)
+                    _, size = stream.get_physical_stats()
+                    if topic not in self.topic_offsets:
+                        self.topic_offsets[topic] = size
+                    if topic not in self.topic_events:
+                        self.topic_events[topic] = asyncio.Event()
+                        self.topic_broadcast_tasks[topic] = asyncio.create_task(self._broadcast_loop(topic))
 
     def _on_file_changed(self, mask, filename):
         if filename.endswith('.json'):
@@ -366,14 +373,14 @@ class SluicegateApiServer:
                     return
 
                 # Route requests
-                path = uri.split("?")[0]
+                path = urllib.parse.unquote(uri.split("?")[0])
                 query_params = {}
                 if "?" in uri:
                     query = uri.split("?")[1]
                     for p in query.split("&"):
                         if "=" in p:
                             k, v = p.split("=", 1)
-                            query_params[k] = v
+                            query_params[urllib.parse.unquote(k)] = urllib.parse.unquote(v)
 
                 is_api = path.startswith("/api/") or path == "/stream"
                 print(f"[Request] {method} {path} (is_api={is_api})", file=sys.stderr)
@@ -428,7 +435,10 @@ class SluicegateApiServer:
 
 
                 if path == "/api/topics":
-                    await self._handle_get_topics(writer)
+                    if method == "DELETE":
+                        await self._handle_delete_topic(query_params, writer)
+                    else:
+                        await self._handle_get_topics(writer)
                 elif path == "/api/events":
                     await self._handle_get_events(query_params, writer)
                 elif path == "/api/inject":
@@ -506,18 +516,21 @@ class SluicegateApiServer:
         self._rescan_topics()
         
         topics_info = []
-        for f in os.listdir(self.streams_dir):
-            if f.endswith('.json'):
-                topic = f[:-5]
-                stream = self._get_stream(topic)
-                blocks, size = stream.get_physical_stats()
-                topics_info.append({
-                    "name": topic,
-                    "size_bytes": size,
-                    "allocated_blocks": blocks,
-                    "max_blocks": stream.max_blocks,
-                    "max_age_min": stream.max_age_minutes
-                })
+        for root, _, files in os.walk(self.streams_dir):
+            for f in files:
+                if f.endswith('.json'):
+                    abs_path = os.path.join(root, f)
+                    rel_path = os.path.relpath(abs_path, self.streams_dir)
+                    topic = rel_path[:-5]
+                    stream = self._get_stream(topic)
+                    blocks, size = stream.get_physical_stats()
+                    topics_info.append({
+                        "name": topic,
+                        "size_bytes": size,
+                        "allocated_blocks": blocks,
+                        "max_blocks": stream.max_blocks,
+                        "max_age_min": stream.max_age_minutes
+                    })
 
         body = json.dumps({"topics": topics_info}).encode('utf-8')
         response = (
@@ -531,6 +544,76 @@ class SluicegateApiServer:
         writer.write(response)
         await writer.drain()
         writer.close()
+
+    async def _handle_delete_topic(self, query_params, writer):
+        topic = query_params.get("topic")
+        if not topic:
+            body = b'{"error":"Missing topic parameter"}'
+            self._send_json_error(400, body, writer)
+            return
+
+        try:
+            # 1. Close the active stream if it exists
+            if topic in self.active_streams:
+                try:
+                    self.active_streams[topic].close()
+                except Exception as e:
+                    print(f"Error closing stream {topic} during deletion: {e}", file=sys.stderr)
+                del self.active_streams[topic]
+
+            # 2. Cancel and clean up broadcast loop tasks
+            task = self.topic_broadcast_tasks.get(topic)
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    print(f"Error awaiting cancelled broadcast task for {topic}: {e}", file=sys.stderr)
+                
+                if topic in self.topic_broadcast_tasks:
+                    del self.topic_broadcast_tasks[topic]
+
+            # 3. Clean up topic events and other metadata
+            if topic in self.topic_events:
+                del self.topic_events[topic]
+            if topic in self.topic_offsets:
+                del self.topic_offsets[topic]
+            if topic in self.topic_subscribers:
+                del self.topic_subscribers[topic]
+
+            # 4. Remove file from disk
+            path = self._get_stream_path(topic)
+            if os.path.exists(path):
+                os.remove(path)
+                
+                # Recursively clean up empty parent directories up to streams_dir
+                dirname = os.path.dirname(path)
+                while dirname and dirname != self.streams_dir and dirname.startswith(self.streams_dir):
+                    try:
+                        if not os.listdir(dirname):
+                            os.rmdir(dirname)
+                            dirname = os.path.dirname(dirname)
+                        else:
+                            break
+                    except Exception:
+                        break
+                
+            res_body = json.dumps({"status": "success", "message": f"Topic '{topic}' deleted successfully"}).encode('utf-8')
+            response = (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(res_body)}\r\n"
+                f"Access-Control-Allow-Origin: *\r\n"
+                f"Connection: close\r\n\r\n"
+            ).encode('utf-8') + res_body
+            writer.write(response)
+            await writer.drain()
+            writer.close()
+        except Exception as e:
+            res_body = json.dumps({"error": f"Deletion failed: {e}"}).encode('utf-8')
+            self._send_json_error(500, res_body, writer)
 
     async def _handle_get_events(self, query_params, writer):
         topic = query_params.get("topic")
