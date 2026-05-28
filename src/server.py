@@ -383,7 +383,6 @@ class SluicegateApiServer:
                             query_params[urllib.parse.unquote(k)] = urllib.parse.unquote(v)
 
                 is_api = path.startswith("/api/") or path == "/stream"
-                print(f"[Request] {method} {path} (is_api={is_api})", file=sys.stderr)
                 # Authenticate request
                 if self.require_auth and is_api:
                     auth_header = headers.get("authorization")
@@ -393,7 +392,7 @@ class SluicegateApiServer:
                     query_read_key = query_params.get("read_key")
                     
                     authenticated = False
-                    print(f"[Auth Debug] path={path} auth_header={repr(auth_header)} api_key={repr(client_api_key or query_api_key)} read_key={repr(client_read_key or query_read_key)}", file=sys.stderr)
+
                     
                     if auth_header and auth_header.startswith("Basic "):
                         try:
