@@ -1,21 +1,25 @@
-# Sluicegate: High-Performance Sequential Edge Stream Telemetry Engine
+# Sluicegate: Sequential Edge Stream Storage & Broadcasting Engine
 
-Sluicegate is a reimagination of high-speed, sequential edge stream storage and broadcasting systems. Designed for resource-constrained edge computing environments, it achieves ultra-high disk ingestion throughput, zero-copy physical sector head reclamation, and reactive real-time multi-subscriber event broadcasting.
+Sluicegate is a lightweight, high-throughput sequential edge stream storage and event broadcasting system designed for resource-constrained environments. It implements zero-copy network-to-disk ingestion, physical sector head reclamation via POSIX sparse allocation, and reactive real-time multi-subscriber event broadcasting using POSIX `inotify` event loops.
 
-Sluicegate features a compiled **C FastCGI ingestion daemon** for hot-path networking, a context-managed **Python storage core** for logarithmic time-based pruning and POSIX deallocations, and a reactive **Server-Sent Events (SSE) server** with dynamic **Material-UI v6 (MUI)** admin dashboarding.
+## System Architecture
+
+The engine is partitioned into three core software components:
+1. **FastCGI Ingestion Daemon (`ingest_fcgi.c`)**: A compiled C daemon utilizing FastCGI and POSIX socket operations to write stream payloads directly to disk, bypassing user-space copy overheads.
+2. **Python Storage Core (`storage.py`)**: Handles sequential flat-file logs, logarithmic-time time-based record pruners, and POSIX extended attributes (`xattr`).
+3. **Unified Server (`server.py`)**: An asynchronous Python web server managing REST API endpoints, event streaming (Server-Sent Events), and serving static admin portal assets.
 
 ---
 
 ## Key Architectural Highlights
 
-* **Scatter-Gather Network Ingestion**: The compiled C daemon (`ingest_fcgi`) leverages POSIX `writev` to write incoming FastCGI socket payloads directly to flat stream files, completely bypassing memory-copying and runtime overheads.
-* **POSIX Sparse File Head Reclamation**: Instantly reclaims storage sectors by zeroing disk blocks from the head of the file using `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`.
-* **$O(\log N)$ Time-Based Retention**: Uses a block-aligned binary search to discover target record timestamps inside massive flat streams, dynamically deallocating expired records in logarithmic time.
-* **Relative Backward Seeks**: Seamlessly walks backward from the end of the log using trailing pointer boundaries (`prv` keys) to locate the absolute start offset of the N-th record from the EOF in $O(N)$ operations.
-* **Reactive Multi-Subscriber SSE Broadcast**: Implements a zero-polling `inotify` watcher (via standard libc ctypes) coupled with a coalesced `asyncio.Event` worker queue to broadcast telemetry frames reactively to multiple TCP connections.
-* **Race-Free Historical Catch-up**: Captures file size boundaries at connection handshakes to replay historical records (via relative or absolute offsets) before merging subscribers into the real-time stream queue.
-* **Inode-Attached Extended Attributes (`xattr`)**: Decouples topic configuration metadata (such as retention limits `max_blocks`, `max_age_minutes`, and active head offset `first_data_byte`) from the hot-path telemetry data payload. By writing properties directly as Linux extended filesystem attributes (`user.SGC.*`) on the flat file's inode, Sluicegate guarantees zero-overhead, database-free metadata persistence that is fully manageable using native tools like `getfattr` and `setfattr`.
-
+* **Scatter-Gather Network Ingestion**: The C daemon (`ingest_fcgi`) utilizes POSIX `writev` to write FastCGI stream frames directly to log files, minimizing user-space memory copies.
+* **POSIX Sparse File Head Reclamation**: Reclaims storage blocks at the file head via `fallocate(..., FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, ...)` to maintain block-aligned storage limits without resizing files.
+* **$O(\log N)$ Time-Based Retention**: Locates record timestamps within the flat file using a block-aligned binary search, executing pruning and head deallocation in $O(\log N)$ time.
+* **Relative Backward Seeks**: Restores navigation contexts by walking backward from EOF using record trailing boundary lengths (`prv` fields) to seek the N-th record in $O(N)$ operations.
+* **Reactive Multi-Subscriber SSE Broadcast**: Utilizes a libc-bound `inotify` watcher and an `asyncio.Event` loop to broadcast appended records to active TCP connections without polling the filesystem.
+* **Race-Free Historical Catch-up**: Resolves race conditions by establishing file boundary size offsets during handshake, replaying historical logs before multiplexing the client into the active real-time event queue.
+* **Extended Attributes (`xattr`) Metadata**: Stores configuration state (retention limits `max_blocks`, `max_age_minutes`, and head byte offset `first_data_byte`) directly on the file inodes using Linux extended attributes (`user.SGC.*`). This decouples stream payloads from configuration structures and enables management using standard system tools like `getfattr` and `setfattr`.
 
 ---
 
@@ -47,14 +51,14 @@ sluicegate/
 ## Installation & Setup
 
 ### Prerequisites
-* **Linux Environment** (supports standard POSIX `fallocate` and `inotify` syscalls)
+* **Linux Kernel** (with support for POSIX `fallocate` and `inotify` syscalls)
 * **GCC** and **GNU Make**
 * **libfcgi-dev** (C FastCGI library)
 * **Python 3.10+** (with standard `ctypes` and `asyncio` libraries)
 * **NodeJS 18+** & **npm** (to compile the React Admin Portal)
 
 ### 1. Compile C Ingestion Daemon
-Build the optimized C FastCGI binary using Make:
+Compile the optimized C FastCGI binary using Make:
 ```bash
 make
 ```
@@ -73,14 +77,14 @@ cd ..
 ## Running Sluicegate
 
 ### Starting the Server (Native)
-Run the unified API server. It dynamically boots and starts serving the REST endpoints, SSE channels, and static React dashboard assets:
+Run the unified API server to serve the REST endpoints, SSE channels, and static React dashboard assets:
 ```bash
 python3 src/server.py
 ```
-Open your browser and navigate to **`http://localhost:8088`** to access the premium Sluicegate Admin Portal!
+By default, the server listens on port `8088`. Open `http://localhost:8088` in a web browser to access the Admin Portal.
 
 ### Running with Docker
-Sluicegate supports a highly optimized multi-stage build that compiles the optimized C FastCGI daemon alongside the compiled React production bundle inside an isolated container instantly:
+A multi-stage Docker build compiles the C FastCGI daemon and compiles the React production bundle inside an isolated container:
 
 ```bash
 # Build the container
@@ -96,17 +100,17 @@ docker run -d \
 ```
 
 > [!IMPORTANT]
-> **Data & Key Persistence**: Mounting the `/app/streams` directory via `-v $(pwd)/streams:/app/streams` is highly recommended. This ensures that both your telemetry stream log files and active security keys (`.api_key` and `.read_key`) are persistently saved on your host machine and persist across container updates/restarts.
+> **Data & Key Persistence**: Mounting the `/app/streams` directory via `-v $(pwd)/streams:/app/streams` is required to ensure that both telemetry stream log files and active security keys (`.api_key` and `.read_key`) persist across container updates/restarts.
 
 ### Docker Configuration Environment Variables
-You can customize the container's security, routing, and ingestion settings by specifying environment variables during `docker run`:
+Configure the container settings using environment variables:
 
 | Environment Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `SLUICEGATE_USER` | `admin` | HTTP Basic Auth username for Admin Portal login |
 | `SLUICEGATE_PASSWORD` | `sluicegate` | HTTP Basic Auth password for Admin Portal login |
-| `SLUICEGATE_API_KEY` | *(Auto-generated)* | Custom override for the Ingestion Key (e.g. `sg_ingest_mykey123`) |
-| `SLUICEGATE_READ_KEY` | *(Auto-generated)* | Custom override for the Read Access Key (e.g. `sg_read_mykey123`) |
+| `SLUICEGATE_API_KEY` | *(Auto-generated)* | Overrides the default Ingestion Key (e.g. `sg_ingest_mykey123`) |
+| `SLUICEGATE_READ_KEY` | *(Auto-generated)* | Overrides the default Read Access Key (e.g. `sg_read_mykey123`) |
 | `SLUICEGATE_NO_AUTH` | `0` | Set to `1` to bypass basic auth credentials validation (Development Only) |
 
 #### Example: Running with Custom Credentials and Custom API Keys
@@ -123,21 +127,19 @@ docker run -d \
   sluicegate
 ```
 
-
 ---
-
 
 ## Verification & Benchmarks
 
 ### Executing Automated Test Suite
-Sluicegate includes full coverage for file-level seek/reads, FastCGI lifecycles, SSE catch-ups, and reactive configuration reloads. Execute the full test suite in under 3 seconds:
+Sluicegate includes full coverage for file-level seek/reads, FastCGI lifecycles, SSE catch-ups, and reactive configuration reloads. Execute the full test suite using:
 ```bash
 python3 -m unittest discover -s tests
 ```
 
 ### Running High-Stress Benchmark
-Test the throughput of Sluicegate under extreme saturation. The benchmark starts 2 SSE servers, connects 3 subscribers to each, and ingests 100,000 telemetry events at maximum speed:
+Evaluate the performance under high concurrency. The benchmark starts 2 SSE servers, connects 3 subscribers to each, and ingests 100,000 telemetry events:
 ```bash
 python3 tests/benchmark.py
 ```
-* **Performance Characteristics**: Sluicegate sustains over **17,200 events/sec of raw disk ingestion** and pushes **over 51,600 events/sec** to connected subscribers with **100% data integrity** and zero dropped frames.
+* **Performance Metrics**: Supports a sustained disk ingestion rate of **~17,200 events/second** and broadcasts at **~51,600 events/second** to connected subscribers with **100% data integrity** and zero dropped frames.
