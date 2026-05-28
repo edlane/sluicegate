@@ -467,6 +467,46 @@ export default function App() {
     }
   }, [isAuthenticated]);
 
+  // Session inactivity timeout (10 minutes from last user activity)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let timeoutId: any;
+
+    const resetTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        setIsAuthenticated(false);
+        sessionStorage.removeItem('sluicegate_auth');
+        sessionStorage.removeItem('sluicegate_sso_token');
+        setStreamActive(false);
+        stopStream();
+        showNotify('Session timed out due to 10 minutes of inactivity.', 'info');
+      }, 10 * 60 * 1000); // 10 minutes
+    };
+
+    // Initialize timer on mount or auth status change
+    resetTimer();
+
+    // Listen to user activity events
+    const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
+    const handleActivity = () => {
+      resetTimer();
+    };
+
+    events.forEach(event => {
+      window.addEventListener(event, handleActivity, { passive: true });
+    });
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      events.forEach(event => {
+        window.removeEventListener(event, handleActivity);
+      });
+    };
+  }, [isAuthenticated]);
+
+
   const fetchKeys = async () => {
     try {
       const res1 = await authFetch('/api/system/apikey');
