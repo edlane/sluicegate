@@ -31,6 +31,8 @@ import {
   Alert,
   Chip,
   TableSortLabel,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 import {
   Speed,
@@ -397,6 +399,12 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
 
+  const [keepSessionAlive, setKeepSessionAlive] = useState(false);
+  const keepAliveRef = useRef(keepSessionAlive);
+  useEffect(() => {
+    keepAliveRef.current = keepSessionAlive;
+  }, [keepSessionAlive]);
+
   const getAuthHeader = () => {
     const ssoToken = sessionStorage.getItem('sluicegate_sso_token');
     if (ssoToken) {
@@ -476,6 +484,11 @@ export default function App() {
     const resetTimer = () => {
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
+        if (keepAliveRef.current) {
+          // If "Keep Alive" is checked, extend the timer instead of logging out
+          resetTimer();
+          return;
+        }
         setIsAuthenticated(false);
         sessionStorage.removeItem('sluicegate_auth');
         sessionStorage.removeItem('sluicegate_sso_token');
@@ -969,6 +982,28 @@ export default function App() {
               </Box>
 
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={keepSessionAlive}
+                      onChange={(e) => setKeepSessionAlive(e.target.checked)}
+                      size="small"
+                      sx={{
+                        color: 'rgba(255, 255, 255, 0.3)',
+                        '&.Mui-checked': {
+                          color: '#7c4dff',
+                        },
+                      }}
+                    />
+                  }
+                  label={
+                    <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary', fontSize: '0.8rem' }}>
+                      Keep Alive
+                    </Typography>
+                  }
+                  sx={{ mr: 0 }}
+                />
+
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8 }}>
                   <FiberManualRecord sx={{ color: serverOnline ? '#4caf50' : '#f44336', fontSize: 14 }} />
                   <Typography variant="body2" sx={{ fontWeight: 700, color: serverOnline ? '#4caf50' : '#f44336', display: { xs: 'none', sm: 'inline-block' } }}>
