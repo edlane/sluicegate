@@ -14,6 +14,8 @@ Sluicegate features a compiled **C FastCGI ingestion daemon** for hot-path netwo
 * **Relative Backward Seeks**: Seamlessly walks backward from the end of the log using trailing pointer boundaries (`prv` keys) to locate the absolute start offset of the N-th record from the EOF in $O(N)$ operations.
 * **Reactive Multi-Subscriber SSE Broadcast**: Implements a zero-polling `inotify` watcher (via standard libc ctypes) coupled with a coalesced `asyncio.Event` worker queue to broadcast telemetry frames reactively to multiple TCP connections.
 * **Race-Free Historical Catch-up**: Captures file size boundaries at connection handshakes to replay historical records (via relative or absolute offsets) before merging subscribers into the real-time stream queue.
+* **Inode-Attached Extended Attributes (`xattr`)**: Decouples topic configuration metadata (such as retention limits `max_blocks`, `max_age_minutes`, and active head offset `first_data_byte`) from the hot-path telemetry data payload. By writing properties directly as Linux extended filesystem attributes (`user.SGC.*`) on the flat file's inode, Sluicegate guarantees zero-overhead, database-free metadata persistence that is fully manageable using native tools like `getfattr` and `setfattr`.
+
 
 ---
 
